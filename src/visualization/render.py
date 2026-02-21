@@ -21,6 +21,96 @@ SKELETON_CONNECTIONS = [
 ]
 
 
+def visualize_segmentation_boxes(
+    frame_dir: str | Path,
+    segmentation_manifest_path: str | Path,
+    output_dir: str | Path,
+    *,
+    box_color: tuple[int, int, int] = (0, 255, 0),
+    box_thickness: int = 2,
+    fps: int = 30,
+) -> Path:
+    """Reconstruct video with YOLO segmentation bounding boxes overlaid.
+
+    Parameters
+    ----------
+    frame_dir : directory containing original frames.
+    segmentation_manifest_path : path to the segmentation.json manifest.
+    output_dir : output directory for the video.
+    box_color : BGR color tuple for bounding box (default: green).
+    box_thickness : thickness of bounding box lines.
+    fps : frames per second for output video.
+
+    Returns
+    -------
+    Path to the output video.
+    """
+    import cv2
+    from tqdm import tqdm
+
+    frame_dir = Path(frame_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load segmentation manifest
+    with open(segmentation_manifest_path) as f:
+        manifest = json.load(f)
+    frames_data = manifest["frames"]
+
+    # Get frame paths
+    frame_paths = sorted(
+        list(frame_dir.glob("frame_*.jpg"))
+        + list(frame_dir.glob("frame_*.png"))
+    )
+
+    if not frame_paths:
+        raise FileNotFoundError(f"No frames in {frame_dir}")
+
+    # Read first frame to get dimensions
+    sample = cv2.imread(str(frame_paths[0]))
+    h, w = sample.shape[:2]
+
+    out_path = output_dir / "segmentation_boxes.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
+
+    for fpath, fdata in tqdm(
+        zip(frame_paths, frames_data), total=len(frame_paths), desc="Segmentation Boxes"
+    ):
+        img = cv2.imread(str(fpath))
+
+        if fdata.get("detected", False):
+            # Draw bounding box
+            x1, y1, x2, y2 = fdata["bbox"]
+            cv2.rectangle(img, (x1, y1), (x2, y2), box_color, box_thickness)
+
+            # Draw padded bounding box with dashed effect (different color)
+            px1, py1, px2, py2 = fdata["bbox_padded"]
+            # For dashed line, draw multiple small segments
+            for i in range(0, max(px2 - px1, py2 - py1), 10):
+                if i + 5 < px2 - px1:
+                    cv2.line(img, (px1 + i, py1), (px1 + i + 5, py1), (100, 149, 237), 1)  # cornflower blue
+                if i + 5 < py2 - py1:
+                    cv2.line(img, (px2, py1 + i), (px2, py1 + i + 5), (100, 149, 237), 1)
+                if i + 5 < px2 - px1:
+                    cv2.line(img, (px1 + i, py2), (px1 + i + 5, py2), (100, 149, 237), 1)
+                if i + 5 < py2 - py1:
+                    cv2.line(img, (px1, py1 + i), (px1, py1 + i + 5), (100, 149, 237), 1)
+
+            # Add confidence text
+            conf = fdata.get("confidence", 0.0)
+            text = f"Conf: {conf:.2f}"
+            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            cv2.rectangle(img, (x1, y1 - text_size[1] - 6), (x1 + text_size[0] + 4, y1), box_color, -1)
+            cv2.putText(img, text, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        writer.write(img)
+
+    writer.release()
+    print(f"  → Segmentation boxes video saved to {out_path}")
+    return out_path
+
+
 def visualize_2d_overlay(
     frame_dir: str | Path,
     poses_2d_path: str | Path,

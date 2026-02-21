@@ -22,3 +22,4 @@ checkpoints/
 *.pth
 *.onnx
 raw_videos/*
+yolo11x-seg.pt

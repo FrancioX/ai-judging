@@ -1,6 +1,7 @@
 """Frame extraction from raw video files."""
 
 from pathlib import Path
+import json
 
 import cv2
 import numpy as np
@@ -94,3 +95,105 @@ def load_frames_as_array(
         img = cv2.imread(str(p))
         frames.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     return np.stack(frames)
+
+
+def reconstruct_video_with_bboxes(
+    frame_dir: str | Path,
+    manifest_path: str | Path,
+    output_path: str | Path,
+    *,
+    fps: float = 30.0,
+    bbox_color: tuple[int, int, int] = (0, 255, 0),
+    bbox_thickness: int = 2,
+) -> Path:
+    """Reconstruct video from frames with bounding boxes overlaid.
+
+    Parameters
+    ----------
+    frame_dir : directory containing extracted frames.
+    manifest_path : path to segmentation.json with bbox info.
+    output_path : output video file path.
+    fps : frames per second for output video.
+    bbox_color : BGR color tuple for the bounding box.
+    bbox_thickness : thickness of the bounding box lines.
+
+    Returns
+    -------
+    Path to the created video file.
+    """
+    frame_dir = Path(frame_dir)
+    manifest_path = Path(manifest_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load the segmentation manifest
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    frame_data = {fd["frame_id"]: fd for fd in manifest["frames"]}
+
+    # Get frame paths in order
+    frame_paths = sorted(
+        list(frame_dir.glob("frame_*.jpg"))
+        + list(frame_dir.glob("frame_*.png"))
+    )
+
+    if not frame_paths:
+        raise FileNotFoundError(f"No frames found in {frame_dir}")
+
+    # Read first frame to get dimensions
+    first_frame = cv2.imread(str(frame_paths[0]))
+    h, w = first_frame.shape[:2]
+
+    # Initialize video writer
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(str(output_path), fourcc, fps, (w, h))
+
+    print(f"Reconstructing video with bounding boxes at {fps} fps...")
+
+    for idx, fpath in enumerate(tqdm(frame_paths, desc="Rendering video")):
+        img = cv2.imread(str(fpath))
+
+        # Draw bounding box if detection exists
+        if idx in frame_data and frame_data[idx].get("detected", False):
+            bbox = frame_data[idx]["bbox_padded"]  # Use padded bbox
+            x1, y1, x2, y2 = bbox
+            cv2.rectangle(img, (x1, y1), (x2, y2), bbox_color, bbox_thickness)
+
+            # Add confidence text
+            conf = frame_data[idx].get("confidence", 0.0)
+            label = f"Skier: {conf:.2f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.6
+            font_thickness = 2
+
+            # Get text size for background
+            (text_width, text_height), baseline = cv2.getTextSize(
+                label, font, font_scale, font_thickness
+            )
+
+            # Draw background rectangle for text
+            cv2.rectangle(
+                img,
+                (x1, y1 - text_height - baseline - 5),
+                (x1 + text_width, y1),
+                bbox_color,
+                -1,
+            )
+
+            # Draw text
+            cv2.putText(
+                img,
+                label,
+                (x1, y1 - baseline - 2),
+                font,
+                font_scale,
+                (0, 0, 0),
+                font_thickness,
+            )
+
+        out.write(img)
+
+    out.release()
+    print(f"  → Video saved to {output_path}")
+    return output_path

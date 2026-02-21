@@ -46,5 +46,6 @@ ski_detection:
 visualization:
   render_3d: true
   overlay_2d: true
+  segmentation_boxes: true    # reconstruct video with YOLO segmentation boxes
   export_format: "html"         # html (plotly) | ply | obj
   fps: 30
