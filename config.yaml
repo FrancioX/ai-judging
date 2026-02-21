@@ -1,0 +1,50 @@
+# Default configuration for the 3D pose estimation pipeline.
+
+# Paths
+raw_videos_dir: "raw_videos"
+output_dir: "output"
+
+# Frame extraction
+frame_extraction:
+  fps: null          # null = use original FPS; set a number to downsample
+  max_frames: null   # null = all frames; cap for quick testing
+  format: "jpg"
+  quality: 95
+
+# Person segmentation (YOLO) — isolates the skier before pose estimation
+segmentation:
+  model: "yolo11x-seg"           # yolo11{n,s,m,l,x}-seg
+  device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA
+  confidence: 0.5
+  padding_ratio: 0.15            # extra padding around bbox (fraction)
+  select_strategy: "largest"     # largest | center | highest_conf
+
+# 2D pose estimation (RTMPose via MMPose)
+pose_2d:
+  model: "rtmpose-x"            # rtmpose-{t,s,m,l,x}
+  det_model: "rtmdet-m"         # person detector (fallback if no segmentation)
+  device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA
+  bbox_threshold: 0.5
+  keypoint_threshold: 0.3
+  use_segmentation_bbox: true    # use YOLO bbox instead of rtmdet
+
+# 3D pose lifting
+pose_3d:
+  model: "motionbert"           # motionbert | videopose3d
+  checkpoint: null              # auto-downloaded if null
+  device: "mps"
+  receptive_field: 243          # temporal window (frames)
+
+# Ski detection
+ski_detection:
+  method: "grounding_sam2"      # grounding_sam2 | color_segmentation
+  prompt: "ski"
+  device: "mps"
+  confidence: 0.35
+
+# Visualization
+visualization:
+  render_3d: true
+  overlay_2d: true
+  export_format: "html"         # html (plotly) | ply | obj
+  fps: 30

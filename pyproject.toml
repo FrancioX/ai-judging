@@ -1,0 +1,48 @@
+[project]
+name = "ai-judging"
+version = "0.1.0"
+description = "Markerless 3D pose estimation for freeride skiing"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Core
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "torch>=2.1.0",
+    "torchvision>=0.16.0",
+    # 3D Pose Lifting
+    "einops>=0.7.0",
+    # Person segmentation (YOLO)
+    "ultralytics>=8.3.0",
+    # Ski detection
+    "supervision>=0.18.0",
+    # Visualization & Export
+    "matplotlib>=3.8.0",
+    "open3d>=0.18.0",
+    "trimesh>=4.0.0",
+    "plotly>=5.18.0",
+    # Video processing
+    "tqdm>=4.66.0",
+    # Utilities
+    "scipy>=1.11.0",
+    "pyyaml>=6.0",
+    # Pin setuptools for pkg_resources (needed by mmcv/mmlab at runtime)
+    "setuptools>=69,<70",
+]
+
+[project.scripts]
+ai-judging = "src.pipeline:main"
+
+[tool.uv]
+package = true
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
