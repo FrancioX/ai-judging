@@ -21,43 +21,4 @@ output/
 checkpoints/
 *.pth
 *.onnx
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__4_Ski Men_Louis Ott_52_Switzerland_85_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__5_Ski Men_Tiernan Bridges_42_France_83_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__6_Ski Men_Federico De Michiel_40_Italy_80_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__7_Ski Men_Alastair James Yule_20_Switzerland_78.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__8_Ski Men_Jonathan Hauss_48_Austria_76.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__9_Ski Men_Noé Kaech_54_Switzerland_75.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__10_Ski Men_Jordan Koch_56_Switzerland_75_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__11_Ski Men_Emile Peizerat_76_France_74.83_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__12_Ski Men_Gabin Leonard_26_France_74_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__13_Ski Men_Maximilien Michel_28_France_73.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__14_Ski Men_Lucas Daines_60_Canada_73.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__15_Ski Men_Tibo Mantero_14_Switzerland_71.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__16_Ski Men_Loris Gonzalez_10_Switzerland_71_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__17_Ski Men_Coen Bennie-Faull_46_Australia_68.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__18_Ski Men_Alexandre Gameiro_82_Switzerland_67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__19_Ski Men_Mika Rolshoven_84_Germany_66_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__20_Ski Men_Gaspard Broekaart_22_France_60_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__21_Ski Men_Leo Flett_36_Switzerland_58.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__22_Ski Men_Michael Byléhn_12_Sweden_57_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__23_Ski Men_Roc Burgstaller_74_Spain_54.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__24_Ski Men_Johan Bachofner_32_Switzerland_52.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__25_Ski Men_Oskar Ravn Mugås_78_Norway_52.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__26_Ski Men_Bastien Verdet_64_France_51.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__27_Ski Men_Jason Havlicek_4_United States of America_50.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__28_Ski Men_Samuel Spark_34_Great Britain_45_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__29_Ski Men_Julien Prevot_38_France_43_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__30_Ski Men_Quentin Grandin_18_Switzerland_40_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__31_Ski Men_Yann Zanolo_72_Switzerland_38.67_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__33_Ski Men_William Martin_2_Canada_32_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__34_Ski Men_Gabin Burtin_70_France_29.33_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__35_Ski Men_Moritz Hlous_16_Germany_23_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__36_Ski Men_Rafferty Burrowes_62_Great Britain_5_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__37_Ski Men_Hamish Henderson_6_New Zealand_0.7_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__38_Ski Men_William Cattaneo_44_Switzerland_0.68_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__39_Ski Men_Laurens Jaquet Pijuan_80_Spain_0.64_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__40_Ski Men_Luke McConnell_30_New Zealand_0.63_.mp4
-raw_videos/VERBIER FREERIDE WEEK QUALIFIER 4__41_Ski Men_Yan Viallet_50_France_0.62_.mp4
+raw_videos/*
