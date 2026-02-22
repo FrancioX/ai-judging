@@ -54,6 +54,8 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
         max_frames=fe_cfg.get("max_frames"),
         fmt=fe_cfg.get("format", "jpg"),
         quality=fe_cfg.get("quality", 95),
+        trim_start_seconds=fe_cfg.get("trim_start_seconds", 0),
+        trim_end_seconds=fe_cfg.get("trim_end_seconds", 0),
     )
 
     # ── Step 2: Person Segmentation (YOLO) ──────────────────────────────
@@ -177,6 +179,8 @@ def run_segment_only_pipeline(video_path: str | Path, config: dict | None = None
         max_frames=fe_cfg.get("max_frames"),
         fmt=fe_cfg.get("format", "jpg"),
         quality=fe_cfg.get("quality", 95),
+        trim_start_seconds=fe_cfg.get("trim_start_seconds", 0),
+        trim_end_seconds=fe_cfg.get("trim_end_seconds", 0),
     )
 
     # ── Step 2: Person Segmentation (YOLO) ──────────────────────────────

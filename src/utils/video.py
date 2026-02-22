@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import shutil
 
 import cv2
 import numpy as np
@@ -16,6 +17,8 @@ def extract_frames(
     max_frames: int | None = None,
     fmt: str = "jpg",
     quality: int = 95,
+    trim_start_seconds: float = 0,
+    trim_end_seconds: float = 0,
 ) -> list[Path]:
     """Extract frames from a video file.
 
@@ -27,6 +30,8 @@ def extract_frames(
     max_frames : cap on the number of extracted frames.
     fmt : image format (jpg, png).
     quality : JPEG quality (1-100).
+    trim_start_seconds : number of seconds to trim from the start.
+    trim_end_seconds : number of seconds to trim from the end.
 
     Returns
     -------
@@ -34,6 +39,10 @@ def extract_frames(
     """
     video_path = Path(video_path)
     output_dir = Path(output_dir)
+
+    # Clean up old frames before extracting new ones
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cap = cv2.VideoCapture(str(video_path))
@@ -42,6 +51,12 @@ def extract_frames(
 
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_duration = total_frames / src_fps
+
+    # Calculate frame indices for trimming
+    start_frame = int(trim_start_seconds * src_fps)
+    end_frame = max(start_frame + 1, int((total_duration - trim_end_seconds) * src_fps))
+    end_frame = min(end_frame, total_frames)
 
     # Compute frame step for downsampling
     step = 1
@@ -56,6 +71,12 @@ def extract_frames(
         ret, frame = cap.read()
         if not ret:
             break
+
+        # Skip frames outside the trim range
+        if frame_idx < start_frame or frame_idx >= end_frame:
+            frame_idx += 1
+            pbar.update(1)
+            continue
 
         if frame_idx % step == 0:
             out_path = output_dir / f"frame_{frame_idx:06d}.{fmt}"
@@ -74,6 +95,8 @@ def extract_frames(
     pbar.close()
     cap.release()
 
+    if trim_start_seconds > 0 or trim_end_seconds > 0:
+        print(f"  → Trimmed {trim_start_seconds}s from start, {trim_end_seconds}s from end")
     print(f"  → Saved {len(saved)} frames to {output_dir}")
     return saved
 

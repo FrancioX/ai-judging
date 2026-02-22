@@ -10,6 +10,8 @@ frame_extraction:
   max_frames: null   # null = all frames; cap for quick testing
   format: "jpg"
   quality: 95
+  trim_start_seconds: 5    # trim N seconds from the start
+  trim_end_seconds: 5      # trim N seconds from the end
 
 # Person segmentation (YOLO) — isolates the skier before pose estimation
 segmentation:
