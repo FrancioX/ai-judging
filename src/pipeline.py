@@ -149,12 +149,20 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
 
     # ── Step 4: Visualization ────────────────────────────────────────────
     viz_cfg = config.get("visualization", {})
+    target_fps = fe_cfg.get("fps")
+    import cv2 as _cv2
+    cap = _cv2.VideoCapture(str(video_path))
+    original_fps = cap.get(_cv2.CAP_PROP_FPS)
+    cap.release()
+    viz_fps = viz_cfg.get("fps")
+    if viz_fps is None:
+        viz_fps = target_fps if target_fps else original_fps
     print(f"\n{'='*60}")
     print("Step 4/4 — Visualization")
     print(f"{'='*60}")
 
     if viz_cfg.get("overlay_2d", True):
-        visualize_2d_overlay(frame_dir, poses_2d_path, viz_dir)
+        visualize_2d_overlay(frame_dir, poses_2d_path, viz_dir, fps=viz_fps)
 
     print(f"\n{'='*60}")
     print(f"✓ Pipeline complete for {video_path.name}")
@@ -340,6 +348,52 @@ def run_segment_only_pipeline(video_path: str | Path, config: dict | None = None
     print(f"{'='*60}\n")
 
 
+def run_visualize_only_pipeline(video_path: str | Path, config: dict | None = None) -> None:
+    """Regenerate visualization outputs from existing frames and pose data."""
+    video_path = Path(video_path)
+    if not video_path.exists():
+        print(f"Error: video not found: {video_path}")
+        sys.exit(1)
+
+    if config is None:
+        config = load_config()
+
+    video_stem = video_path.stem
+    base_out = Path(config.get("output_dir", "output"))
+    frame_dir = base_out / "frames" / video_stem
+    pose_2d_dir = base_out / "poses_2d" / video_stem
+    viz_dir = base_out / "visualizations" / video_stem
+
+    poses_2d_path = pose_2d_dir / "poses_2d.json"
+    if not frame_dir.exists():
+        raise FileNotFoundError(f"Frames not found in {frame_dir}")
+    if not poses_2d_path.exists():
+        raise FileNotFoundError(f"2D poses not found: {poses_2d_path}")
+
+    viz_cfg = config.get("visualization", {})
+    fe_cfg = config.get("frame_extraction", {})
+    target_fps = fe_cfg.get("fps")
+    import cv2 as _cv2
+    cap = _cv2.VideoCapture(str(video_path))
+    original_fps = cap.get(_cv2.CAP_PROP_FPS)
+    cap.release()
+    viz_fps = viz_cfg.get("fps")
+    if viz_fps is None:
+        viz_fps = target_fps if target_fps else original_fps
+
+    print(f"\n{'='*60}")
+    print("Visualization only — regenerating overlay")
+    print(f"{'='*60}")
+
+    if viz_cfg.get("overlay_2d", True):
+        visualize_2d_overlay(frame_dir, poses_2d_path, viz_dir, fps=viz_fps)
+
+    print(f"\n{'='*60}")
+    print(f"✓ Visualization regenerated for {video_path.name}")
+    print(f"  Video directory: {viz_dir}")
+    print(f"{'='*60}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="3D Pose Estimation Pipeline for Freeride Skiing"
@@ -366,6 +420,10 @@ def main():
         "--pose-only", "-p", action="store_true",
         help="Run frame extraction + 2D pose (YOLO-Pose) and render bbox+skeleton video"
     )
+    parser.add_argument(
+        "--visualize-only", "-v", action="store_true",
+        help="Regenerate visualization video from existing frames + poses"
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -378,7 +436,9 @@ def main():
         config["frame_extraction"]["max_frames"] = 50
 
     # Choose which pipeline to run
-    if args.pose_only:
+    if args.visualize_only:
+        pipeline_func = run_visualize_only_pipeline
+    elif args.pose_only:
         pipeline_func = run_pose_only_pipeline
     elif args.segment_only:
         pipeline_func = run_segment_only_pipeline
