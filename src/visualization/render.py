@@ -111,6 +111,106 @@ def visualize_segmentation_boxes(
     return out_path
 
 
+def visualize_tracking_boxes(
+    frame_dir: str | Path,
+    tracking_manifest_path: str | Path,
+    output_dir: str | Path,
+    *,
+    box_color: tuple[int, int, int] = (255, 165, 0),  # orange for tracked
+    interpolated_color: tuple[int, int, int] = (255, 0, 255),  # magenta for interpolated
+    box_thickness: int = 2,
+    fps: int = 30,
+) -> Path:
+    """Reconstruct video with tracked/smoothed bounding boxes overlaid.
+
+    Parameters
+    ----------
+    frame_dir : directory containing original frames.
+    tracking_manifest_path : path to the tracking.json manifest.
+    output_dir : output directory for the video.
+    box_color : BGR color tuple for detected bounding boxes (default: orange).
+    interpolated_color : BGR color for interpolated boxes (default: magenta).
+    box_thickness : thickness of bounding box lines.
+    fps : frames per second for output video.
+
+    Returns
+    -------
+    Path to the output video.
+    """
+    import cv2
+    from tqdm import tqdm
+
+    frame_dir = Path(frame_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load tracking manifest
+    with open(tracking_manifest_path) as f:
+        manifest = json.load(f)
+    frames_data = manifest["frames"]
+
+    # Get frame paths
+    frame_paths = sorted(
+        list(frame_dir.glob("frame_*.jpg"))
+        + list(frame_dir.glob("frame_*.png"))
+    )
+
+    if not frame_paths:
+        raise FileNotFoundError(f"No frames in {frame_dir}")
+
+    # Read first frame to get dimensions
+    sample = cv2.imread(str(frame_paths[0]))
+    h, w = sample.shape[:2]
+
+    out_path = output_dir / "tracking_boxes.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
+
+    selected_track_id = manifest.get("selected_track_id", -1)
+
+    for fpath, fdata in tqdm(
+        zip(frame_paths, frames_data), total=len(frame_paths), desc="Tracking Boxes"
+    ):
+        img = cv2.imread(str(fpath))
+
+        # Determine box color based on interpolation
+        is_interpolated = fdata.get("interpolated", False)
+        color = interpolated_color if is_interpolated else box_color
+
+        # Draw bounding box
+        x1, y1, x2, y2 = fdata["bbox"]
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, box_thickness)
+
+        # Draw padded bounding box with dashed effect
+        px1, py1, px2, py2 = fdata["bbox_padded"]
+        dash_color = tuple(int(c * 0.7) for c in color)  # darker shade
+        for i in range(0, max(px2 - px1, py2 - py1), 10):
+            if i + 5 < px2 - px1:
+                cv2.line(img, (px1 + i, py1), (px1 + i + 5, py1), dash_color, 1)
+            if i + 5 < py2 - py1:
+                cv2.line(img, (px2, py1 + i), (px2, py1 + i + 5), dash_color, 1)
+            if i + 5 < px2 - px1:
+                cv2.line(img, (px1 + i, py2), (px1 + i + 5, py2), dash_color, 1)
+            if i + 5 < py2 - py1:
+                cv2.line(img, (px1, py1 + i), (px1, py1 + i + 5), dash_color, 1)
+
+        # Add track info text
+        track_id = fdata.get("track_id", -1)
+        conf = fdata.get("confidence", 0.0)
+        status = "Interp" if is_interpolated else "Detect"
+        text = f"Track:{track_id} {status}"
+
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+        cv2.rectangle(img, (x1, y1 - text_size[1] - 6), (x1 + text_size[0] + 4, y1), color, -1)
+        cv2.putText(img, text, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        writer.write(img)
+
+    writer.release()
+    print(f"  → Tracking boxes video saved to {out_path}")
+    return out_path
+
+
 def visualize_2d_overlay(
     frame_dir: str | Path,
     poses_2d_path: str | Path,

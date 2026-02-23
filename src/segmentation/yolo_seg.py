@@ -1,13 +1,15 @@
 """YOLO instance segmentation to isolate the skier from the background.
 
 Uses Ultralytics YOLOv11-seg to detect and segment persons in each frame.
+Runs with ``model.track()`` to assign persistent track IDs via ByteTrack.
+
 Outputs per-frame:
   - Cropped frames (tight around the skier bounding box with padding)
   - Binary masks (pixel-level person segmentation)
-  - A JSON manifest with bounding boxes and tracking info
+  - A JSON manifest with bounding boxes, track IDs and all detected persons
 
-This runs *before* 2D pose estimation so the pose model focuses on
-the correct person without background distractions.
+This runs *before* the tracking stage and 2D pose estimation so
+downstream stages can select the best track and smooth bounding boxes.
 """
 
 from __future__ import annotations
@@ -29,9 +31,14 @@ def segment_skier(
     confidence: float = 0.5,
     person_class_id: int = 0,
     padding_ratio: float = 0.15,
-    select_strategy: str = "largest",
+    select_strategy: str = "center",
 ) -> Path:
-    """Run YOLO instance segmentation to isolate the skier.
+    """Run YOLO instance segmentation with tracking to isolate the skier.
+
+    Uses ``model.track(persist=True)`` to get stable track IDs across
+    frames via ByteTrack.  All detected persons and their track IDs are
+    stored in the manifest so the downstream tracking stage can select
+    the best track, smooth bounding boxes and fill detection gaps.
 
     Parameters
     ----------
@@ -64,7 +71,7 @@ def segment_skier(
     if not frame_paths:
         raise FileNotFoundError(f"No frames found in {frame_dir}")
 
-    print(f"Running YOLO segmentation on {len(frame_paths)} frames …")
+    print(f"Running YOLO segmentation + tracking on {len(frame_paths)} frames …")
     print(f"  Model: {model_name}  |  Device: {device}  |  Conf: {confidence}")
     print(f"  Strategy: {select_strategy}  |  Padding: {padding_ratio:.0%}")
 
@@ -80,21 +87,23 @@ def segment_skier(
 
     manifest_frames: list[dict] = []
 
-    for idx, fpath in enumerate(tqdm(frame_paths, desc="YOLO Seg")):
+    for idx, fpath in enumerate(tqdm(frame_paths, desc="YOLO Seg+Track")):
         img = cv2.imread(str(fpath))
         h, w = img.shape[:2]
 
-        # Run inference
-        results = model(
+        # Run inference with tracking (persist=True keeps state across frames)
+        results = model.track(
             str(fpath),
             conf=confidence,
             classes=[person_class_id],
             device=device,
             verbose=False,
+            persist=True,
+            tracker="bytetrack.yaml",
         )
         result = results[0]
 
-        # Extract person detections
+        # Extract all person detections with track IDs
         persons = _extract_persons(result, h, w)
 
         if not persons:
@@ -112,10 +121,11 @@ def segment_skier(
                 "confidence": 0.0,
                 "crop_file": crop_path.name,
                 "mask_file": mask_path.name,
+                "persons": [],
             })
             continue
 
-        # Select the main skier
+        # Select the main skier (used for backward-compatible crop output)
         person = _select_person(persons, h, w, strategy=select_strategy)
 
         # Compute padded bounding box
@@ -138,6 +148,17 @@ def segment_skier(
         mask_path = mask_dir / f"mask_{idx:06d}.png"
         cv2.imwrite(str(mask_path), mask)
 
+        # Build serialisable persons list (excludes numpy mask)
+        persons_json = [
+            {
+                "bbox": p["bbox"],
+                "confidence": float(p["confidence"]),
+                "area": p["area"],
+                "track_id": p["track_id"],
+            }
+            for p in persons
+        ]
+
         manifest_frames.append({
             "frame_id": idx,
             "frame_file": fpath.name,
@@ -145,9 +166,11 @@ def segment_skier(
             "bbox": [x1, y1, x2, y2],
             "bbox_padded": [px1, py1, px2, py2],
             "confidence": float(person["confidence"]),
+            "track_id": person["track_id"],
             "crop_file": crop_path.name,
             "mask_file": mask_path.name,
             "n_persons_detected": len(persons),
+            "persons": persons_json,
         })
 
     # Write manifest
@@ -156,6 +179,8 @@ def segment_skier(
         "confidence_threshold": confidence,
         "select_strategy": select_strategy,
         "padding_ratio": padding_ratio,
+        "tracking_enabled": True,
+        "tracker": "bytetrack",
         "n_frames": len(manifest_frames),
         "frames": manifest_frames,
     }
@@ -171,13 +196,17 @@ def segment_skier(
 
 
 def _extract_persons(result, img_h: int, img_w: int) -> list[dict]:
-    """Extract person detections from a YOLO result object."""
+    """Extract person detections (with track IDs) from a YOLO result object."""
     persons = []
     boxes = result.boxes
     masks = result.masks
 
     if boxes is None or len(boxes) == 0:
         return persons
+
+    # Track IDs assigned by ByteTrack (may be None on first appearance)
+    track_ids = boxes.id
+    has_ids = track_ids is not None
 
     for i in range(len(boxes)):
         cls_id = int(boxes.cls[i].item())
@@ -187,10 +216,15 @@ def _extract_persons(result, img_h: int, img_w: int) -> list[dict]:
         conf = float(boxes.conf[i].item())
         x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy().astype(int).tolist()
 
+        tid: int | None = None
+        if has_ids and i < len(track_ids):
+            tid = int(track_ids[i].item())
+
         person = {
             "bbox": [x1, y1, x2, y2],
             "confidence": conf,
             "area": (x2 - x1) * (y2 - y1),
+            "track_id": tid,
         }
 
         # Extract pixel mask if available

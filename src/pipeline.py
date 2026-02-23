@@ -19,8 +19,9 @@ from pathlib import Path
 
 import yaml
 
-from src.utils.video import extract_frames, reconstruct_video_with_bboxes
+from src.utils.video import extract_frames, load_frame_meta, reconstruct_video_with_bboxes
 from src.segmentation.yolo_seg import segment_skier
+from src.tracking.tracker import track_skier
 from src.pose_2d.yolo_pose import (
     estimate_2d_poses as estimate_2d_poses_yolo,
     render_pose_video,
@@ -29,7 +30,11 @@ from src.pose_2d.rtmpose import estimate_2d_poses as estimate_2d_poses_rtmpose
 # Disabled imports (re-enable when models are ready):
 # from src.pose_3d.lifter import lift_to_3d
 # from src.ski_detection.detector import detect_skis
-from src.visualization.render import visualize_2d_overlay  # visualize_3d_plotly disabled
+from src.visualization.render import (
+    visualize_2d_overlay,
+    visualize_segmentation_boxes,
+    visualize_tracking_boxes,
+)  # visualize_3d_plotly disabled
 
 
 def load_config(path: str | Path = "config.yaml") -> dict:
@@ -53,13 +58,14 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
     base_out = Path(config.get("output_dir", "output"))
     frame_dir = base_out / "frames" / video_stem
     seg_dir = base_out / "segmentation" / video_stem
+    track_dir = base_out / "tracking" / video_stem
     pose_2d_dir = base_out / "poses_2d" / video_stem
     viz_dir = base_out / "visualizations" / video_stem
 
     # ── Step 1: Extract frames ──────────────────────────────────────────
     fe_cfg = config.get("frame_extraction", {})
     print(f"\n{'='*60}")
-    print(f"Step 1/4 — Frame Extraction: {video_path.name}")
+    print(f"Step 1/5 — Frame Extraction: {video_path.name}")
     print(f"{'='*60}")
     extract_frames(
         video_path,
@@ -75,7 +81,7 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
     # ── Step 2: Person Segmentation + Crop Extraction (YOLO-Seg) ────────
     seg_cfg = config.get("segmentation", {})
     print(f"\n{'='*60}")
-    print("Step 2/4 — Person Segmentation (YOLO-Seg)")
+    print("Step 2/5 — Person Segmentation (YOLO-Seg)")
     print(f"{'='*60}")
     seg_manifest_path = segment_skier(
         frame_dir,
@@ -87,36 +93,75 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
         select_strategy=seg_cfg.get("select_strategy", "center"),
     )
 
-    # ── Step 3: 2D Pose Estimation from Crops ───────────────────────────
-    # Pose model runs on high-resolution crops and remaps keypoints back to
-    # full-frame coordinates using bbox_padded offsets from Step 2.
-    p2d_cfg = config.get("pose_2d", {})
-    pose_backend = p2d_cfg.get("backend", "yolo")
+    # ── Step 3: Visualization (Pre-Tracking) ────────────────────────────
+    viz_cfg = config.get("visualization", {})
+    meta = load_frame_meta(frame_dir)
+    viz_fps = viz_cfg.get("fps") or meta.get("effective_fps")
+    if viz_fps is None:
+        import cv2 as _cv2
+        cap = _cv2.VideoCapture(str(video_path))
+        viz_fps = cap.get(_cv2.CAP_PROP_FPS)
+        cap.release()
     print(f"\n{'='*60}")
-    print(f"Step 3/4 — 2D Pose Estimation ({pose_backend})")
+    print(f"Step 3/5 — Visualization (Pre-Tracking) ({viz_fps:.2f} fps)")
     print(f"{'='*60}")
-    if pose_backend == "rtmpose":
-        poses_2d_path = estimate_2d_poses_rtmpose(
+    visualize_segmentation_boxes(frame_dir, seg_manifest_path, viz_dir, fps=viz_fps)
+
+    # ── Step 4: Temporal Tracking ───────────────────────────────────────
+    trk_cfg = config.get("tracking", {})
+    tracking_enabled = trk_cfg.get("enabled", True)
+    if tracking_enabled:
+        print(f"\n{'='*60}")
+        print("Step 4/5 — Temporal Tracking")
+        print(f"{'='*60}")
+        track_manifest_path = track_skier(
+            seg_manifest_path,
             frame_dir,
-            pose_2d_dir,
-            model_name=p2d_cfg.get("model", "rtmpose-l_8xb256-420e_coco-256x192"),
-            det_model=p2d_cfg.get("det_model", "rtmdet-m"),
-            device=p2d_cfg.get("device", "cpu"),
-            bbox_thr=p2d_cfg.get("bbox_threshold", 0.5),
-            kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
-            segmentation_manifest=seg_manifest_path,
+            track_dir,
+            w_conf=trk_cfg.get("w_conf", 0.3),
+            w_center=trk_cfg.get("w_center", 0.5),
+            w_length=trk_cfg.get("w_length", 0.2),
+            min_track_frames=trk_cfg.get("min_track_frames", 10),
+            smooth_window=trk_cfg.get("smooth_window", 5),
+            padding_ratio=seg_cfg.get("padding_ratio", 0.15),
+            merge_tracks=trk_cfg.get("merge_tracks", True),
+            merge_top_n=trk_cfg.get("merge_top_n", 5),
+            merge_score_threshold=trk_cfg.get("merge_score_threshold", 0.3),
+            optical_flow_method=trk_cfg.get("optical_flow_method", "auto"),
+            flow_max_extrapolate_frames=trk_cfg.get("flow_max_extrapolate_frames", 30),
+            flow_min_keypoints=trk_cfg.get("flow_min_keypoints", 5),
         )
-    else:
-        poses_2d_path = estimate_2d_poses_yolo(
-            frame_dir,
-            pose_2d_dir,
-            model_name=p2d_cfg.get("yolo_model", "yolo11x-pose"),
-            device=p2d_cfg.get("device", "mps"),
-            confidence=p2d_cfg.get("bbox_threshold", 0.25),
-            kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
-            imgsz=p2d_cfg.get("imgsz", 1280),
-            segmentation_manifest=seg_manifest_path,
-        )
+
+    # ── SKIPPED: 2D Pose Estimation ─────────────────────────────────────
+    # Pose estimation has been disabled per user request.
+    # To re-enable, uncomment the code below:
+    # p2d_cfg = config.get("pose_2d", {})
+    # pose_backend = p2d_cfg.get("backend", "yolo")
+    # print(f"\n{'='*60}")
+    # print(f"Step X/5 — 2D Pose Estimation ({pose_backend})")
+    # print(f"{'='*60}")
+    # if pose_backend == "rtmpose":
+    #     poses_2d_path = estimate_2d_poses_rtmpose(
+    #         frame_dir,
+    #         pose_2d_dir,
+    #         model_name=p2d_cfg.get("model", "rtmpose-l_8xb256-420e_coco-256x192"),
+    #         det_model=p2d_cfg.get("det_model", "rtmdet-m"),
+    #         device=p2d_cfg.get("device", "cpu"),
+    #         bbox_thr=p2d_cfg.get("bbox_threshold", 0.5),
+    #         kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
+    #         segmentation_manifest=pose_manifest,
+    #     )
+    # else:
+    #     poses_2d_path = estimate_2d_poses_yolo(
+    #         frame_dir,
+    #         pose_2d_dir,
+    #         model_name=p2d_cfg.get("yolo_model", "yolo11x-pose"),
+    #         device=p2d_cfg.get("device", "mps"),
+    #         confidence=p2d_cfg.get("bbox_threshold", 0.25),
+    #         kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
+    #         imgsz=p2d_cfg.get("imgsz", 1280),
+    #         segmentation_manifest=pose_manifest,
+    #     )
 
     # ── DISABLED: 3D Pose Lifting ────────────────────────────────────────
     # Re-enable when MotionBERT is fully integrated.
@@ -147,22 +192,12 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
     #     confidence=ski_cfg.get("confidence", 0.35),
     # )
 
-    # ── Step 4: Visualization ────────────────────────────────────────────
-    viz_cfg = config.get("visualization", {})
-    target_fps = fe_cfg.get("fps")
-    import cv2 as _cv2
-    cap = _cv2.VideoCapture(str(video_path))
-    original_fps = cap.get(_cv2.CAP_PROP_FPS)
-    cap.release()
-    viz_fps = viz_cfg.get("fps")
-    if viz_fps is None:
-        viz_fps = target_fps if target_fps else original_fps
+    # ── Step 5: Visualization (Post-Tracking) ───────────────────────────
     print(f"\n{'='*60}")
-    print("Step 4/4 — Visualization")
+    print(f"Step 5/5 — Visualization (Post-Tracking) ({viz_fps:.2f} fps)")
     print(f"{'='*60}")
-
-    if viz_cfg.get("overlay_2d", True):
-        visualize_2d_overlay(frame_dir, poses_2d_path, viz_dir, fps=viz_fps)
+    if tracking_enabled:
+        visualize_tracking_boxes(frame_dir, track_manifest_path, viz_dir, fps=viz_fps)
 
     print(f"\n{'='*60}")
     print(f"✓ Pipeline complete for {video_path.name}")
@@ -187,6 +222,7 @@ def run_pose_only_pipeline(video_path: str | Path, config: dict | None = None) -
     base_out = Path(config.get("output_dir", "output"))
     frame_dir = base_out / "frames" / video_stem
     seg_dir = base_out / "segmentation" / video_stem
+    track_dir = base_out / "tracking" / video_stem
     pose_2d_dir = base_out / "poses_2d" / video_stem
     viz_dir = base_out / "visualizations" / video_stem
 
@@ -194,7 +230,7 @@ def run_pose_only_pipeline(video_path: str | Path, config: dict | None = None) -
     fe_cfg = config.get("frame_extraction", {})
     target_fps = fe_cfg.get("fps")
     print(f"\n{'='*60}")
-    print(f"Step 1/4 — Frame Extraction: {video_path.name}")
+    print(f"Step 1/5 — Frame Extraction: {video_path.name}")
     print(f"{'='*60}")
     extract_frames(
         video_path,
@@ -210,7 +246,7 @@ def run_pose_only_pipeline(video_path: str | Path, config: dict | None = None) -
     # ── Step 2: Person Segmentation + Crop Extraction (YOLO-Seg) ────────
     seg_cfg = config.get("segmentation", {})
     print(f"\n{'='*60}")
-    print("Step 2/4 — Person Segmentation (YOLO-Seg)")
+    print("Step 2/5 — Person Segmentation (YOLO-Seg)")
     print(f"{'='*60}")
     seg_manifest_path = segment_skier(
         frame_dir,
@@ -222,10 +258,34 @@ def run_pose_only_pipeline(video_path: str | Path, config: dict | None = None) -
         select_strategy=seg_cfg.get("select_strategy", "center"),
     )
 
-    # ── Step 3: 2D Pose (YOLO-Pose on crops) ────────────────────────────
+    # ── Step 3: Temporal Tracking ───────────────────────────────────────
+    trk_cfg = config.get("tracking", {})
+    tracking_enabled = trk_cfg.get("enabled", True)
+    pose_manifest = seg_manifest_path
+    if tracking_enabled:
+        print(f"\n{'='*60}")
+        print("Step 3/5 — Temporal Tracking")
+        print(f"{'='*60}")
+        track_manifest_path = track_skier(
+            seg_manifest_path,
+            frame_dir,
+            track_dir,
+            w_conf=trk_cfg.get("w_conf", 0.3),
+            w_center=trk_cfg.get("w_center", 0.5),
+            w_length=trk_cfg.get("w_length", 0.2),
+            min_track_frames=trk_cfg.get("min_track_frames", 10),
+            smooth_window=trk_cfg.get("smooth_window", 5),
+            padding_ratio=seg_cfg.get("padding_ratio", 0.15),
+            optical_flow_method=trk_cfg.get("optical_flow_method", "auto"),
+            flow_max_extrapolate_frames=trk_cfg.get("flow_max_extrapolate_frames", 30),
+            flow_min_keypoints=trk_cfg.get("flow_min_keypoints", 5),
+        )
+        pose_manifest = track_manifest_path
+
+    # ── Step 4: 2D Pose (YOLO-Pose on crops) ────────────────────────────
     p2d_cfg = config.get("pose_2d", {})
     print(f"\n{'='*60}")
-    print("Step 3/4 — 2D Pose Estimation (YOLO-Pose)")
+    print("Step 4/5 — 2D Pose Estimation (YOLO-Pose)")
     print(f"{'='*60}")
     poses_2d_path = estimate_2d_poses_yolo(
         frame_dir,
@@ -235,18 +295,20 @@ def run_pose_only_pipeline(video_path: str | Path, config: dict | None = None) -
         confidence=p2d_cfg.get("bbox_threshold", 0.25),
         kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
         imgsz=p2d_cfg.get("imgsz", 1280),
-        segmentation_manifest=seg_manifest_path,
+        segmentation_manifest=pose_manifest,
     )
 
-    # ── Step 4: Render pose video ───────────────────────────────────────
-    import cv2 as _cv2
-    cap = _cv2.VideoCapture(str(video_path))
-    original_fps = cap.get(_cv2.CAP_PROP_FPS)
-    cap.release()
-    video_fps = target_fps if target_fps else original_fps
+    # ── Step 5: Render pose video ───────────────────────────────────────
+    meta = load_frame_meta(frame_dir)
+    video_fps = meta.get("effective_fps")
+    if video_fps is None:
+        import cv2 as _cv2
+        cap = _cv2.VideoCapture(str(video_path))
+        video_fps = cap.get(_cv2.CAP_PROP_FPS)
+        cap.release()
 
     print(f"\n{'='*60}")
-    print("Step 4/4 — Rendering pose video")
+    print(f"Step 5/5 — Rendering pose video ({video_fps:.2f} fps)")
     print(f"{'='*60}")
     viz_dir.mkdir(parents=True, exist_ok=True)
     out_video = viz_dir / f"{video_stem}_pose_2d.mp4"
@@ -314,28 +376,49 @@ def run_segment_only_pipeline(video_path: str | Path, config: dict | None = None
         device=seg_cfg.get("device", "mps"),
         confidence=seg_cfg.get("confidence", 0.5),
         padding_ratio=seg_cfg.get("padding_ratio", 0.15),
-        select_strategy=seg_cfg.get("select_strategy", "largest"),
+        select_strategy=seg_cfg.get("select_strategy", "center"),
     )
 
+    # ── Temporal Tracking (optional) ────────────────────────────────────
+    trk_cfg = config.get("tracking", {})
+    tracking_enabled = trk_cfg.get("enabled", True)
+    bbox_manifest = seg_manifest_path
+    if tracking_enabled:
+        track_dir = base_out / "tracking" / video_stem
+        print(f"\n{'='*60}")
+        print("Temporal Tracking")
+        print(f"{'='*60}")
+        track_manifest_path = track_skier(
+            seg_manifest_path,
+            frame_dir,
+            track_dir,
+            w_conf=trk_cfg.get("w_conf", 0.3),
+            w_center=trk_cfg.get("w_center", 0.5),
+            w_length=trk_cfg.get("w_length", 0.2),
+            min_track_frames=trk_cfg.get("min_track_frames", 10),
+            smooth_window=trk_cfg.get("smooth_window", 5),
+            padding_ratio=seg_cfg.get("padding_ratio", 0.15),
+        )
+        bbox_manifest = track_manifest_path
+
     # ── Video Reconstruction ────────────────────────────────────────────
+    meta = load_frame_meta(frame_dir)
+    reconstruction_fps = meta.get("effective_fps")
+    if reconstruction_fps is None:
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        reconstruction_fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+
     print(f"\n{'='*60}")
-    print("Reconstructing video with bounding boxes")
+    print(f"Reconstructing video with bounding boxes ({reconstruction_fps:.2f} fps)")
     print(f"{'='*60}")
     viz_dir.mkdir(parents=True, exist_ok=True)
     output_video = viz_dir / f"{video_stem}_segmentation.mp4"
 
-    # Use the original video FPS if we resampled, otherwise use config viz fps
-    import cv2
-    cap = cv2.VideoCapture(str(video_path))
-    original_fps = cap.get(cv2.CAP_PROP_FPS)
-    cap.release()
-
-    # If we resampled, use that fps, otherwise use original
-    reconstruction_fps = target_fps if target_fps else original_fps
-
     reconstruct_video_with_bboxes(
         frame_dir,
-        seg_manifest_path,
+        bbox_manifest,
         output_video,
         fps=reconstruction_fps,
     )
@@ -371,18 +454,16 @@ def run_visualize_only_pipeline(video_path: str | Path, config: dict | None = No
         raise FileNotFoundError(f"2D poses not found: {poses_2d_path}")
 
     viz_cfg = config.get("visualization", {})
-    fe_cfg = config.get("frame_extraction", {})
-    target_fps = fe_cfg.get("fps")
-    import cv2 as _cv2
-    cap = _cv2.VideoCapture(str(video_path))
-    original_fps = cap.get(_cv2.CAP_PROP_FPS)
-    cap.release()
-    viz_fps = viz_cfg.get("fps")
+    meta = load_frame_meta(frame_dir)
+    viz_fps = viz_cfg.get("fps") or meta.get("effective_fps")
     if viz_fps is None:
-        viz_fps = target_fps if target_fps else original_fps
+        import cv2 as _cv2
+        cap = _cv2.VideoCapture(str(video_path))
+        viz_fps = cap.get(_cv2.CAP_PROP_FPS)
+        cap.release()
 
     print(f"\n{'='*60}")
-    print("Visualization only — regenerating overlay")
+    print(f"Visualization only — regenerating overlay ({viz_fps:.2f} fps)")
     print(f"{'='*60}")
 
     if viz_cfg.get("overlay_2d", True):

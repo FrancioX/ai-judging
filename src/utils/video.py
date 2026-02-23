@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import json
-import shutil
 
 import cv2
 import numpy as np
@@ -65,6 +64,7 @@ def extract_frames(
     step = 1
     if fps is not None and fps < src_fps:
         step = max(1, round(src_fps / fps))
+    effective_fps = src_fps / step
 
     saved: list[Path] = []
     frame_idx = 0
@@ -98,10 +98,44 @@ def extract_frames(
     pbar.close()
     cap.release()
 
+    # Write metadata so downstream stages know the actual fps of the frames
+    meta = {
+        "source_fps": src_fps,
+        "effective_fps": effective_fps,
+        "step": step,
+        "target_fps": fps,
+        "total_source_frames": total_frames,
+        "extracted_frames": len(saved),
+        "trim_start_seconds": trim_start_seconds,
+        "trim_end_seconds": trim_end_seconds,
+    }
+    with open(output_dir / "frames_meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
     if trim_start_seconds > 0 or trim_end_seconds > 0:
         print(f"  → Trimmed {trim_start_seconds}s from start, {trim_end_seconds}s from end")
-    print(f"  → Saved {len(saved)} frames to {output_dir}")
+    print(f"  → Saved {len(saved)} frames at {effective_fps:.2f} fps to {output_dir}")
     return saved
+
+
+def load_frame_meta(frame_dir: str | Path) -> dict:
+    """Load frame extraction metadata from *frames_meta.json*.
+
+    Parameters
+    ----------
+    frame_dir : directory that was passed to ``extract_frames``.
+
+    Returns
+    -------
+    Dict with at least ``effective_fps`` and ``source_fps`` keys.
+    If the metadata file is missing (legacy frames), returns a dict
+    with ``effective_fps = None``.
+    """
+    meta_path = Path(frame_dir) / "frames_meta.json"
+    if meta_path.exists():
+        with open(meta_path) as f:
+            return json.load(f)
+    return {"effective_fps": None, "source_fps": None}
 
 
 def load_frames_as_array(
