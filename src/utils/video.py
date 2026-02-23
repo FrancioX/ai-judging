@@ -40,9 +40,12 @@ def extract_frames(
     video_path = Path(video_path)
     output_dir = Path(output_dir)
 
-    # Clean up old frames before extracting new ones
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+    # Reuse existing frames if the directory already contains extracted images
+    existing = sorted(output_dir.glob("frame_*.jpg")) + sorted(output_dir.glob("frame_*.png"))
+    if existing:
+        print(f"  → Reusing {len(existing)} existing frames in {output_dir}")
+        return existing
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cap = cv2.VideoCapture(str(video_path))

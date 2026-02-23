@@ -23,3 +23,5 @@ checkpoints/
 *.onnx
 raw_videos/*
 yolo11x-seg.pt
+yolo11m-pose.pt
+yolo11x-pose.pt

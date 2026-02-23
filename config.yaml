@@ -13,22 +13,28 @@ frame_extraction:
   trim_start_seconds: 5    # trim N seconds from the start
   trim_end_seconds: 5      # trim N seconds from the end
 
-# Person segmentation (YOLO) — isolates the skier before pose estimation
+# Person segmentation (YOLO-Seg) — used in quality-first pipeline.
+# Detects and crops the skier before pose estimation, improving keypoint
+# accuracy on distant subjects. Outputs bbox_padded offsets for coordinate
+# remapping and high-resolution crops for the pose model.
 segmentation:
   model: "yolo11x-seg"           # yolo11{n,s,m,l,x}-seg
   device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA
   confidence: 0.5
   padding_ratio: 0.15            # extra padding around bbox (fraction)
-  select_strategy: "largest"     # largest | center | highest_conf
+  select_strategy: "center"     # largest | center | highest_conf
 
-# 2D pose estimation (RTMPose via MMPose)
+# 2D pose estimation
+# backend: "yolo" (fast, MPS-native) or "rtmpose" (higher accuracy, CPU-only on Mac)
 pose_2d:
-  model: "rtmpose-x"            # rtmpose-{t,s,m,l,x}
-  det_model: "rtmdet-m"         # person detector (fallback if no segmentation)
-  device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA
-  bbox_threshold: 0.5
+  backend: "yolo"                # yolo | rtmpose
+  yolo_model: "yolo11x-pose"    # yolo11{n,s,m,l,x}-pose (x for max accuracy)
+  model: "rtmpose-l_8xb256-420e_coco-256x192"  # used when backend=rtmpose
+  det_model: "rtmdet-m"         # person detector for rtmpose backend
+  device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA, cpu
+  imgsz: 640                     # inference resolution (640 default, crops ~60x100px)
+  bbox_threshold: 0.25           # lower threshold for small/distant persons
   keypoint_threshold: 0.3
-  use_segmentation_bbox: true    # use YOLO bbox instead of rtmdet
 
 # 3D pose lifting
 pose_3d:

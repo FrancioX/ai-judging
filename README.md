@@ -14,23 +14,19 @@ raw_video.mp4
 └─────────┬────────────┘
           ▼
 ┌──────────────────────┐
-│  2. Person Segment.   │  (YOLOv11-seg) ← isolate skier
+│  2. 2D Pose (17 kp)  │  (RTMDet + RTMPose / MMPose)
 └─────────┬────────────┘
           ▼
 ┌──────────────────────┐
-│  3. 2D Pose (17 kp)  │  (RTMPose / MMPose)
+│  3. 3D Lifting       │  (MotionBERT)
 └─────────┬────────────┘
           ▼
 ┌──────────────────────┐
-│  4. 3D Lifting       │  (MotionBERT)
+│  4. Ski Detection    │  (GroundingDINO + SAM2 / colour seg)
 └─────────┬────────────┘
           ▼
 ┌──────────────────────┐
-│  5. Ski Detection    │  (GroundingDINO + SAM2 / colour seg)
-└─────────┬────────────┘
-          ▼
-┌──────────────────────┐
-│  6. Visualization    │  (Plotly 3D / OpenCV overlay)
+│  5. Visualization    │  (Plotly 3D / OpenCV overlay)
 └──────────────────────┘
 ```
 
@@ -101,10 +97,31 @@ ai_judging/
 
 | Stage | Model | Why |
 |-------|-------|-----|
-| Segmentation | **YOLOv11x-seg** (Ultralytics) | Fast instance segmentation to isolate the skier from background/spectators |
+| Person Detection | **RTMDet-m** (MMDet, inside MMPose) | Fast COCO person detector; provides bounding boxes for RTMPose |
 | 2D Pose | **RTMPose-X** (MMPose) | Best accuracy/speed trade-off for real-time body keypoints |
 | 3D Lift | **MotionBERT** | Temporal transformer, state-of-the-art monocular 3D |
 | Ski Det | **GroundingDINO + SAM2** | Zero-shot prompted detection ("ski") with pixel-precise masks |
 
 The pipeline includes fallback stubs so you can run the end-to-end flow
 even before downloading model checkpoints.
+
+### Re-enabling YOLO pixel segmentation
+
+The previous pipeline used **YOLOv11x-seg** (Ultralytics) as a separate person
+segmentation step _before_ pose estimation.  YOLO provides pixel-level instance
+masks (not just bounding boxes), which can be useful for:
+
+- **Background removal** — feeding cleaner crops to the pose estimator.
+- **Downstream mask-based ski detection** — isolating the skier before
+  colour/shape analysis.
+
+Since RTMDet (built into MMPose) already handles person detection with
+comparable accuracy, the YOLO step was removed from the default pipeline to
+avoid running two detectors.  The YOLO code is fully preserved in
+`src/segmentation/yolo_seg.py` and can be re-introduced by:
+
+1. Calling `segment_skier()` between frame extraction and pose estimation.
+2. Passing the YOLO crops + `segmentation_manifest` to `estimate_2d_poses()`.
+3. The `--segment-only` CLI flag still works for standalone YOLO testing.
+
+See the `segmentation` section in `config.yaml` for the YOLO settings.

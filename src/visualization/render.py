@@ -117,8 +117,10 @@ def visualize_2d_overlay(
     output_dir: str | Path,
     *,
     skeleton: bool = True,
+    draw_bbox: bool = True,
+    fps: float = 30.0,
 ) -> Path:
-    """Draw 2D keypoints overlaid on frames and write a video."""
+    """Draw 2D keypoints and bounding boxes overlaid on frames and write a video."""
     import cv2
     from tqdm import tqdm
 
@@ -144,7 +146,7 @@ def visualize_2d_overlay(
 
     out_path = output_dir / "overlay_2d.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(out_path), fourcc, 30, (w, h))
+    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
 
     for fpath, fdata in tqdm(
         zip(frame_paths, frames_data), total=len(frame_paths), desc="Overlay 2D"
@@ -152,13 +154,26 @@ def visualize_2d_overlay(
         img = cv2.imread(str(fpath))
         kpts = np.array(fdata["keypoints"])  # (17, 3)
 
+        # Draw bounding box
+        if draw_bbox:
+            bbox = fdata.get("bbox", [])
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                if x2 > x1 and y2 > y1:
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    if len(bbox) >= 5 and bbox[4] > 0:
+                        cv2.putText(
+                            img, f"{bbox[4]:.2f}", (x1, y1 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1,
+                        )
+
         # Draw skeleton
         if skeleton:
             for i, j in SKELETON_CONNECTIONS:
                 if kpts[i, 2] > 0.3 and kpts[j, 2] > 0.3:
                     pt1 = (int(kpts[i, 0]), int(kpts[i, 1]))
                     pt2 = (int(kpts[j, 0]), int(kpts[j, 1]))
-                    cv2.line(img, pt1, pt2, (0, 255, 0), 2)
+                    cv2.line(img, pt1, pt2, (255, 128, 0), 2)
 
         # Draw keypoints
         for k in range(kpts.shape[0]):
