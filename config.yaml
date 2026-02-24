@@ -21,7 +21,7 @@ segmentation:
   model: "yolo11x-seg"           # yolo11{n,s,m,l,x}-seg
   device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA
   confidence: 0.5
-  padding_ratio: 0.15            # extra padding around bbox (fraction)
+  padding_ratio: 0.50            # extra padding around bbox (fraction)
   select_strategy: "center"     # largest | center | highest_conf
 
 # Temporal tracking — selects the best skier track from ByteTrack IDs,

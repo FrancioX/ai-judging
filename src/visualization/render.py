@@ -71,7 +71,7 @@ def visualize_segmentation_boxes(
     h, w = sample.shape[:2]
 
     out_path = output_dir / "segmentation_boxes.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
 
     for fpath, fdata in tqdm(
@@ -163,7 +163,7 @@ def visualize_tracking_boxes(
     h, w = sample.shape[:2]
 
     out_path = output_dir / "tracking_boxes.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
 
     selected_track_id = manifest.get("selected_track_id", -1)
@@ -245,7 +245,7 @@ def visualize_2d_overlay(
     h, w = sample.shape[:2]
 
     out_path = output_dir / "overlay_2d.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
 
     for fpath, fdata in tqdm(
