@@ -61,6 +61,13 @@ uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage visualization
 
 Each stage validates that required upstream outputs exist and fails with a clear error if dependencies are missing (e.g., tracking requires segmentation output).
 
+## Test Video Reference
+
+When the user refers to "the test video", "test case video", "example video", or similar phrases, they mean:
+`VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89.mp4`
+
+This video is located in `raw_videos/` and has pre-processed outputs available in `output/` for all pipeline stages.
+
 ## Project Conventions
 
 - **One public function per stage module**. Add new stages as `src/<stage_name>/<module>.py` with empty `__init__.py`.

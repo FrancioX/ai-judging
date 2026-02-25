@@ -218,9 +218,25 @@ def visualize_2d_overlay(
     *,
     skeleton: bool = True,
     draw_bbox: bool = True,
+    tracking_manifest_path: str | Path | None = None,
     fps: float = 30.0,
 ) -> Path:
-    """Draw 2D keypoints and bounding boxes overlaid on frames and write a video."""
+    """Draw 2D keypoints and bounding boxes overlaid on frames and write a video.
+
+    Parameters
+    ----------
+    frame_dir : directory containing original frames.
+    poses_2d_path : path to the poses_2d.json manifest.
+    output_dir : output directory for the video.
+    skeleton : whether to draw skeleton connections.
+    draw_bbox : whether to draw bounding boxes.
+    tracking_manifest_path : optional path to tracking.json to draw buffered bounding boxes.
+    fps : frames per second for output video.
+
+    Returns
+    -------
+    Path to the output video.
+    """
     import cv2
     from tqdm import tqdm
 
@@ -231,6 +247,15 @@ def visualize_2d_overlay(
     with open(poses_2d_path) as f:
         data = json.load(f)
     frames_data = data["frames"]
+
+    # Load tracking manifest if provided
+    tracking_frames_data = None
+    if tracking_manifest_path:
+        tracking_path = Path(tracking_manifest_path)
+        if tracking_path.exists():
+            with open(tracking_path) as f:
+                tracking_data = json.load(f)
+            tracking_frames_data = tracking_data.get("frames", [])
 
     frame_paths = sorted(
         list(frame_dir.glob("frame_*.jpg"))
@@ -248,24 +273,30 @@ def visualize_2d_overlay(
     fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
 
-    for fpath, fdata in tqdm(
+    for idx, (fpath, fdata) in enumerate(tqdm(
         zip(frame_paths, frames_data), total=len(frame_paths), desc="Overlay 2D"
-    ):
+    )):
         img = cv2.imread(str(fpath))
         kpts = np.array(fdata["keypoints"])  # (17, 3)
 
-        # Draw bounding box
-        if draw_bbox:
-            bbox = fdata.get("bbox", [])
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
-                if x2 > x1 and y2 > y1:
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    if len(bbox) >= 5 and bbox[4] > 0:
-                        cv2.putText(
-                            img, f"{bbox[4]:.2f}", (x1, y1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1,
-                        )
+        # Draw buffered bounding box from tracking if available
+        if tracking_frames_data and idx < len(tracking_frames_data):
+            track_fdata = tracking_frames_data[idx]
+            bbox_padded = track_fdata.get("bbox_padded", [])
+            if len(bbox_padded) >= 4:
+                px1, py1, px2, py2 = int(bbox_padded[0]), int(bbox_padded[1]), int(bbox_padded[2]), int(bbox_padded[3])
+                if px2 > px1 and py2 > py1:
+                    # Draw padded bounding box with dashed effect in blue
+                    dash_color = (100, 149, 237)  # cornflower blue
+                    for i in range(0, max(px2 - px1, py2 - py1), 10):
+                        if i + 5 < px2 - px1:
+                            cv2.line(img, (px1 + i, py1), (px1 + i + 5, py1), dash_color, 1)
+                        if i + 5 < py2 - py1:
+                            cv2.line(img, (px2, py1 + i), (px2, py1 + i + 5), dash_color, 1)
+                        if i + 5 < px2 - px1:
+                            cv2.line(img, (px1 + i, py2), (px1 + i + 5, py2), dash_color, 1)
+                        if i + 5 < py2 - py1:
+                            cv2.line(img, (px1, py1 + i), (px1, py1 + i + 5), dash_color, 1)
 
         # Draw skeleton
         if skeleton:

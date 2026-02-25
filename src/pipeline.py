@@ -445,6 +445,7 @@ def run_single_stage(
                 viz_dir,
                 skeleton=True,
                 draw_bbox=True,
+                tracking_manifest_path=track_manifest if track_manifest and track_manifest.exists() else None,
                 fps=viz_fps,
             )
         else:
