@@ -50,7 +50,6 @@ def track_skier(
     smooth_window: int = 5,
     padding_ratio: float = 0.15,
     merge_tracks: bool = True,
-    merge_top_n: int = 5,
     merge_score_threshold: float = 0.3,
     optical_flow_method: str = "auto",
     flow_max_extrapolate_frames: int = 30,
@@ -77,7 +76,6 @@ def track_skier(
     smooth_window : EMA / moving-average window (0 = disabled).
     padding_ratio : extra padding around bbox (fraction of width/height).
     merge_tracks : if True, merge multiple high-scoring tracks.
-    merge_top_n : max number of tracks to merge (if merge_tracks=True).
     merge_score_threshold : minimum score for track inclusion in merge.
     optical_flow_method : ``"auto"`` (sparse LK, fallback to dense),
         ``"sparse"`` (Lucas-Kanade only), ``"dense"`` (Farneback only),
@@ -118,7 +116,7 @@ def track_skier(
     print(f"  Weights — conf: {w_conf}  center: {w_center}  length: {w_length}")
     print(f"  Smooth window: {smooth_window}  |  Full coverage: guaranteed")
     if merge_tracks:
-        print(f"  Multi-track merge: enabled (top {merge_top_n}, threshold {merge_score_threshold:.2f})")
+        print(f"  Multi-track merge: enabled (threshold {merge_score_threshold:.2f})")
 
     # ------------------------------------------------------------------
     # Phase A — Build per-track history and score each track
@@ -135,6 +133,7 @@ def track_skier(
                 "bbox": p["bbox"],
                 "confidence": p["confidence"],
                 "area": p["area"],
+                "track_id": tid,
             })
 
     if not tracks:
@@ -183,9 +182,9 @@ def track_skier(
 
     # Select track(s) based on merge strategy
     if merge_tracks:
-        # Select top N tracks that meet the score threshold
+        # Select all tracks that meet the score threshold
         selected_tracks = [
-            tid for tid, score, _ in track_scores[:merge_top_n]
+            tid for tid, score, _ in track_scores
             if score >= merge_score_threshold
         ]
         if not selected_tracks:
@@ -196,21 +195,22 @@ def track_skier(
         print(f"  → Merging {len(selected_tracks)} track(s): {selected_tracks[:5]}{'...' if len(selected_tracks) > 5 else ''}")
         print(f"  → Combined detections: {total_detections}")
 
-        # Merge observations from all selected tracks
-        # For frames with multiple detections, pick the best one (highest confidence + center score)
-        selected_obs = {}
+        # Merge observations from all selected tracks.
+        # Collect ALL candidates per frame, then resolve conflicts with a
+        # forward continuity pass that penalises large spatial jumps.
+        frame_candidates: dict[int, list[dict]] = {}
         for tid in selected_tracks:
             for o in tracks[tid]:
                 fid = o["frame_id"]
-                if fid not in selected_obs:
-                    selected_obs[fid] = o
-                else:
-                    # Pick the better detection (weighted by confidence and center proximity)
-                    existing = selected_obs[fid]
-                    existing_score = _score_detection(existing, cx, cy, max_dist, w_conf, w_center)
-                    new_score = _score_detection(o, cx, cy, max_dist, w_conf, w_center)
-                    if new_score > existing_score:
-                        selected_obs[fid] = o
+                frame_candidates.setdefault(fid, []).append(o)
+
+        selected_obs = _resolve_merge_conflicts(
+            frame_candidates, cx, cy, max_dist, w_conf, w_center,
+            frame_dir=frame_dir,
+            seg_frames=seg_frames,
+            optical_flow_method=optical_flow_method,
+            flow_min_keypoints=flow_min_keypoints,
+        )
 
         # Store metadata for manifest (use top track as representative)
         best_tid = selected_tracks
@@ -372,6 +372,158 @@ def _score_detection(
     center_score = 1.0 - dist / max_dist
 
     return w_conf * conf + w_center * center_score
+
+
+def _resolve_merge_conflicts(
+    frame_candidates: dict[int, list[dict]],
+    cx: float,
+    cy: float,
+    max_dist: float,
+    w_conf: float,
+    w_center: float,
+    *,
+    w_continuity: float = 0.6,
+    w_track_stickiness: float = 0.4,
+    frame_dir: Path | None = None,
+    seg_frames: list[dict] | None = None,
+    optical_flow_method: str = "auto",
+    flow_min_keypoints: int = 5,
+) -> dict[int, dict]:
+    """Pick one detection per frame using optical-flow continuity and track-ID stickiness.
+
+    For frames with a single candidate the choice is trivial.  When
+    multiple candidates exist, a forward pass blends:
+
+    1. **Quality** — confidence + center-proximity (static per detection).
+    2. **Continuity** — proximity to the *predicted* position of the
+       previous bbox.  When optical flow is available the prediction uses
+       the measured displacement; otherwise it falls back to the raw
+       previous centre (zero-velocity assumption).
+    3. **Track stickiness** — bonus for having the same ByteTrack ID as
+       the previously chosen detection, preventing identity switches
+       during crossover events.
+
+    Parameters
+    ----------
+    frame_candidates : mapping from ``frame_id`` to a *list* of
+        candidate observation dicts (each with ``bbox``, ``confidence``).
+    cx, cy : image center coordinates.
+    max_dist : diagonal distance used for normalisation.
+    w_conf, w_center : weights forwarded to ``_score_detection``.
+    w_continuity : weight for the spatial-continuity term.
+    w_track_stickiness : bonus for same ByteTrack ``track_id``.
+    frame_dir : directory containing extracted frames (needed for OF).
+    seg_frames : segmentation frame list (maps frame_id → frame_file).
+    optical_flow_method : ``"auto"`` | ``"sparse"`` | ``"dense"`` | ``"none"``.
+    flow_min_keypoints : sparse→dense fallback threshold.
+
+    Returns
+    -------
+    dict mapping ``frame_id`` → chosen observation.
+    """
+    use_flow = (
+        optical_flow_method != "none"
+        and _HAS_NUMPY
+        and frame_dir is not None
+        and seg_frames is not None
+    )
+
+    # Small LRU cache for frames to avoid re-reads
+    _frame_cache: dict[int, "np.ndarray | None"] = {}
+
+    def _get_frame(fid: int) -> "np.ndarray | None":
+        if fid not in _frame_cache:
+            if seg_frames is not None and frame_dir is not None:
+                fpath = frame_dir / seg_frames[fid]["frame_file"]
+                img = cv2.imread(str(fpath))
+                _frame_cache[fid] = img
+            else:
+                _frame_cache[fid] = None
+            # Keep cache bounded
+            if len(_frame_cache) > 4:
+                oldest = next(iter(_frame_cache))
+                del _frame_cache[oldest]
+        return _frame_cache.get(fid)
+
+    sorted_fids = sorted(frame_candidates)
+    selected_obs: dict[int, dict] = {}
+    prev_bbox: list[int] | None = None
+    prev_fid: int | None = None
+    prev_track_id: int | None = None
+
+    for fid in sorted_fids:
+        candidates = frame_candidates[fid]
+
+        if len(candidates) == 1:
+            selected_obs[fid] = candidates[0]
+        else:
+            # Compute OF-predicted center from previous bbox
+            predicted_cx, predicted_cy = None, None
+            if prev_bbox is not None:
+                pred_cx = (prev_bbox[0] + prev_bbox[2]) / 2
+                pred_cy = (prev_bbox[1] + prev_bbox[3]) / 2
+
+                if use_flow and prev_fid is not None:
+                    img_prev = _get_frame(prev_fid)
+                    img_cur = _get_frame(fid)
+                    if img_prev is not None and img_cur is not None:
+                        dx, dy, _m = _compute_flow_displacement(
+                            img_prev, img_cur, prev_bbox,
+                            method=optical_flow_method,
+                            min_keypoints=flow_min_keypoints,
+                        )
+                        pred_cx += dx
+                        pred_cy += dy
+
+                predicted_cx, predicted_cy = pred_cx, pred_cy
+
+            best_obs = None
+            best_score = -1.0
+
+            for det in candidates:
+                # Static quality score (confidence + center)
+                quality = _score_detection(
+                    det, cx, cy, max_dist, w_conf, w_center,
+                )
+
+                # Continuity bonus — distance to predicted position
+                if predicted_cx is not None and predicted_cy is not None:
+                    det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
+                    det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
+                    dist = math.sqrt(
+                        (det_cx - predicted_cx) ** 2
+                        + (det_cy - predicted_cy) ** 2
+                    )
+                    continuity = max(0.0, 1.0 - dist / max_dist)
+                else:
+                    continuity = 0.5  # neutral when no history
+
+                # Track-ID stickiness — prefer same track as previous frame
+                det_track_id = det.get("track_id")
+                stickiness = (
+                    1.0
+                    if prev_track_id is not None
+                    and det_track_id is not None
+                    and det_track_id == prev_track_id
+                    else 0.0
+                )
+
+                combined = (
+                    quality
+                    + w_continuity * continuity
+                    + w_track_stickiness * stickiness
+                )
+                if combined > best_score:
+                    best_score = combined
+                    best_obs = det
+
+            selected_obs[fid] = best_obs  # type: ignore[assignment]
+
+        prev_bbox = selected_obs[fid]["bbox"]
+        prev_track_id = selected_obs[fid].get("track_id")
+        prev_fid = fid
+
+    return selected_obs
 
 
 # ---------------------------------------------------------------------------

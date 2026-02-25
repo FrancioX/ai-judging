@@ -35,7 +35,6 @@ tracking:
   min_track_frames: 10       # ignore tracks shorter than this
   smooth_window: 5            # EMA window for bbox smoothing (0 = off)
   merge_tracks: true          # merge multiple high-scoring tracks (solves fragmentation)
-  merge_top_n: 5              # max number of tracks to merge
   merge_score_threshold: 0.3  # minimum score for track inclusion in merge
   optical_flow_method: "auto" # auto (sparse LK + dense fallback) | sparse | dense | none
   flow_max_extrapolate_frames: 30  # max frames to extrapolate via OF for leading/trailing gaps
