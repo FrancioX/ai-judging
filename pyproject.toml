@@ -26,8 +26,6 @@ dependencies = [
     # Utilities
     "scipy>=1.11.0",
     "pyyaml>=6.0",
-    # Pin setuptools for pkg_resources (needed by mmcv/mmlab at runtime)
-    "setuptools>=69,<70",
 ]
 
 [project.scripts]

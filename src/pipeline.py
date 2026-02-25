@@ -1,9 +1,9 @@
-"""Main pipeline: video → segmentation (YOLO-Seg) → 2D pose on crops (YOLO-Pose or RTMPose) → visualization.
+"""Main pipeline: video → segmentation (YOLO-Seg) → 2D pose on crops (YOLO-Pose) → visualization.
 
 Quality-first 7-stage pipeline:
 1. Frame extraction
 2. Person segmentation + crop extraction (YOLO-Seg)
-3. 2D pose estimation from crops with coordinate remapping (YOLO-Pose or RTMPose)
+3. 2D pose estimation from crops with coordinate remapping (YOLO-Pose)
 4. Visualization (Pre-Tracking)
 5. Temporal Tracking
 6. 2D Pose Overlay Visualization
@@ -29,7 +29,6 @@ from src.pose_2d.yolo_pose import (
     estimate_2d_poses as estimate_2d_poses_yolo,
     render_pose_video,
 )
-from src.pose_2d.rtmpose import estimate_2d_poses as estimate_2d_poses_rtmpose
 # Disabled imports (re-enable when models are ready):
 # from src.pose_3d.lifter import lift_to_3d
 # from src.ski_detection.detector import detect_skis
@@ -139,32 +138,19 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
 
     # ── Step 5: 2D Pose Estimation ──────────────────────────────────────
     p2d_cfg = config.get("pose_2d", {})
-    pose_backend = p2d_cfg.get("backend", "yolo")
     print(f"\n{'='*60}")
-    print(f"Step 5/6 — 2D Pose Estimation ({pose_backend})")
+    print("Step 5/6 — 2D Pose Estimation (YOLO)")
     print(f"{'='*60}")
-    if pose_backend == "rtmpose":
-        poses_2d_path = estimate_2d_poses_rtmpose(
-            frame_dir,
-            pose_2d_dir,
-            model_name=p2d_cfg.get("model", "rtmpose-l_8xb256-420e_coco-256x192"),
-            det_model=p2d_cfg.get("det_model", "rtmdet-m"),
-            device=p2d_cfg.get("device", "cpu"),
-            bbox_thr=p2d_cfg.get("bbox_threshold", 0.5),
-            kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
-            segmentation_manifest=pose_manifest,
-        )
-    else:
-        poses_2d_path = estimate_2d_poses_yolo(
-            frame_dir,
-            pose_2d_dir,
-            model_name=p2d_cfg.get("yolo_model", "yolo11x-pose"),
-            device=p2d_cfg.get("device", "mps"),
-            confidence=p2d_cfg.get("bbox_threshold", 0.25),
-            kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
-            imgsz=p2d_cfg.get("imgsz", 1280),
-            segmentation_manifest=pose_manifest,
-        )
+    poses_2d_path = estimate_2d_poses_yolo(
+        frame_dir,
+        pose_2d_dir,
+        model_name=p2d_cfg.get("yolo_model", "yolo11x-pose"),
+        device=p2d_cfg.get("device", "mps"),
+        confidence=p2d_cfg.get("bbox_threshold", 0.25),
+        kpt_thr=p2d_cfg.get("keypoint_threshold", 0.3),
+        imgsz=p2d_cfg.get("imgsz", 1280),
+        segmentation_manifest=pose_manifest,
+    )
 
     # ── DISABLED: 3D Pose Lifting ────────────────────────────────────────
     # Re-enable when MotionBERT is fully integrated.

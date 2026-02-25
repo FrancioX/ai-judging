@@ -1,7 +1,6 @@
 """2D pose estimation using YOLO-Pose (Ultralytics).
 
-Single-model detection + 17 COCO keypoints.  Runs natively on MPS
-(Apple Silicon), avoiding the mmcv CPU bottleneck.
+Single-model detection + 17 COCO keypoints. Runs natively on MPS (Apple Silicon).
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ def estimate_2d_poses(
 
     Returns
     -------
-    Path to poses_2d.json with the same schema as rtmpose output.
+    Path to poses_2d.json with 17 COCO keypoints per person.
     """
     try:
         from ultralytics import YOLO

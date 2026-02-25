@@ -41,13 +41,9 @@ tracking:
   flow_max_extrapolate_frames: 30  # max frames to extrapolate via OF for leading/trailing gaps
   flow_min_keypoints: 5       # min tracked keypoints before sparse→dense fallback
 
-# 2D pose estimation
-# backend: "yolo" (fast, MPS-native) or "rtmpose" (higher accuracy, CPU-only on Mac)
+# 2D pose estimation (YOLO-Pose)
 pose_2d:
-  backend: "yolo"                # yolo | rtmpose
   yolo_model: "yolo11x-pose"    # yolo11{n,s,m,l,x}-pose (x for max accuracy)
-  model: "rtmpose-l_8xb256-420e_coco-256x192"  # used when backend=rtmpose
-  det_model: "rtmdet-m"         # person detector for rtmpose backend
   device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA, cpu
   imgsz: 640                     # inference resolution (640 default, crops ~60x100px)
   bbox_threshold: 0.25           # lower threshold for small/distant persons
