@@ -39,6 +39,28 @@ uv run pytest
 uv run ruff check src/
 ```
 
+## Running Individual Pipeline Stages
+
+Use `--stage` to run a single stage independently, reusing upstream outputs. Useful for performance comparison with different hyperparameters.
+
+**Available stages**: `frames`, `segmentation`, `tracking`, `pose_2d`, `pose_3d`, `ski_detection`, `visualization`.
+
+```bash
+# Run only tracking stage (reuses segmentation output)
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage tracking
+
+# Run 2D pose with different config
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage pose_2d
+
+# Test frame extraction in quick mode
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage frames --test
+
+# Regenerate visualizations
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage visualization
+```
+
+Each stage validates that required upstream outputs exist and fails with a clear error if dependencies are missing (e.g., tracking requires segmentation output).
+
 ## Project Conventions
 
 - **One public function per stage module**. Add new stages as `src/<stage_name>/<module>.py` with empty `__init__.py`.

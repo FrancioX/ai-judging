@@ -42,15 +42,50 @@ Requires **Python 3.12** and [uv](https://docs.astral.sh/uv/).
 # 1. Install core dependencies
 uv sync
 
-# Process a single video
+# Full pipeline on a single video
 uv run python -m src.pipeline raw_videos/SOME_VIDEO.mp4
 
 # Process all videos (with a cap)
 uv run python -m src.pipeline --max-videos 3
 
+# Quick test mode (5 fps, 50 frames max)
+uv run python -m src.pipeline --test raw_videos/SOME_VIDEO.mp4
+
 # Edit config
 $EDITOR config.yaml
 ```
+
+### Running Individual Pipeline Stages
+
+Use the `--stage` flag to run a single stage independently on an existing video. This is useful for comparing performance with different hyperparameter settings without re-running upstream stages.
+
+**Available stages:**
+
+- `frames` — Extract frames from video
+- `segmentation` — Run YOLO person segmentation on frames
+- `tracking` — Temporal tracking (requires segmentation output)
+- `pose_2d` — 2D pose estimation (requires segmentation or tracking output)
+- `pose_3d` — 3D pose lifting (requires 2D pose output) *[disabled]*
+- `ski_detection` — Ski detection (requires frames) *[disabled]*
+- `visualization` — Regenerate visualizations (requires frames + poses_2d)
+
+**Examples:**
+
+```bash
+# Run only tracking stage (reuses existing segmentation output)
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage tracking
+
+# Run only 2D pose estimation with different config
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage pose_2d
+
+# Test frame extraction in quick mode
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage frames --test
+
+# Regenerate visualizations with different settings
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage visualization
+```
+
+Each stage validates that its required upstream outputs exist and will fail with a clear error if dependencies are missing.
 
 ## Configuration
 
