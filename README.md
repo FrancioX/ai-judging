@@ -132,6 +132,59 @@ The tracking stage writes its own crops and manifest
 (`output/tracking/<video>/tracking.json`), which the downstream 2D pose
 stage reads automatically.
 
+### Gap Filling with Optical Flow
+
+When the selected skier track has detection gaps (frames where the detector
+lost the person), the tracking system must estimate a bounding box.  By
+default, gaps are filled using **optical flow** to propagate motion between
+frames—preserving natural skier movement trajectories rather than crude
+linear interpolation.
+
+**How it works:**
+
+- **Sparse Lucas-Kanade flow** (preferred) detects and tracks feature
+  points inside and around the bounding box region across two consecutive
+  frames, computing a median displacement of reliable (inlier) points.
+  Outliers are rejected via median absolute deviation.  If fewer than
+  `flow_min_keypoints` features are successfully tracked, sparse flow
+  falls back to dense flow.
+
+- **Dense Farneback flow** (fallback) computes motion vectors for every
+  pixel in a region around the bbox.  The mean flow within the original
+  bbox region is used as the displacement estimate.
+
+- **Bidirectional propagation** (internal gaps): Forward flow is computed
+  from the left anchor and backward flow from the right anchor, then the
+  two estimates are blended linearly across the gap.  This produces
+  physically plausible intermediate positions.
+
+- **Anchor propagation** (leading/trailing gaps): Leading frames (before
+  the first detection) and trailing frames (after the last detection) are
+  filled by repeatedly applying flow backward/forward up to
+  `flow_max_extrapolate_frames` frames.  Beyond that distance, the nearest
+  anchor bbox is copied to avoid unrealistic extrapolation.
+
+- **Fallback to linear interpolation**: If optical flow is disabled via
+  `optical_flow_method: "none"` or numpy is unavailable, gaps are filled
+  with simple linear interpolation of bbox coordinates.
+
+**Configuration:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `optical_flow_method` | `"auto"` | `"auto"` (sparse→dense), `"sparse"` (Lucas-Kanade only), `"dense"` (Farneback only), or `"none"` (linear interpolation) |
+| `flow_min_keypoints` | `5` | Minimum tracked features before sparse LK falls back to dense |
+| `flow_max_extrapolate_frames` | `30` | Maximum frames to propagate via flow for leading/trailing gaps |
+
+**Velocity-aware smoothing:**
+
+When optical flow is active, the per-frame flow displacement is recorded in
+the manifest (`flow_displacement` field).  The temporal smoothing pass is
+then **velocity-aware**: frames with high optical flow (fast-moving skier)
+are smoothed less, while static frames are smoothed more.  This preserves
+sharp directional changes during tricks while reducing jitter during slow
+passages.
+
 ### Configuration
 
 All tracking parameters live in the `tracking:` section of `config.yaml`:
@@ -144,6 +197,9 @@ All tracking parameters live in the `tracking:` section of `config.yaml`:
 | `w_length` | `0.2` | Weight for track duration ratio |
 | `min_track_frames` | `10` | Ignore tracks shorter than this |
 | `smooth_window` | `5` | EMA window for bbox smoothing (0 = off) |
+| `optical_flow_method` | `"auto"` | Optical flow method: `"auto"`, `"sparse"`, `"dense"`, or `"none"` |
+| `flow_min_keypoints` | `5` | Min tracked features for sparse Lucas-Kanade before fallback to dense |
+| `flow_max_extrapolate_frames` | `30` | Max frames to propagate via optical flow for leading/trailing gaps |
 
 Set `tracking.enabled: false` to bypass tracking entirely and fall back to
 the per-frame segmentation selection (previous behaviour).
