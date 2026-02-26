@@ -76,6 +76,70 @@ This video is located in `raw_videos/` and has pre-processed outputs available i
 - Heavy dependencies (`torch`, `ultralytics`) are deferred or guarded by `try/except ImportError`.
 - No custom exception classes — use `FileNotFoundError`, `RuntimeError`, `ImportError` with descriptive messages.
 
+## Tracking Evaluation & Ground-Truth Annotations
+
+Three videos have hand-annotated ground-truth center-point annotations stored in `annotations/tracking/<video_stem>/gt_centers.csv`. These are sparse (every ~10th frame) and are linearly interpolated during evaluation.
+
+**Annotated videos:**
+- `VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33`
+- `VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89`
+- `VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86`
+
+**GT CSV format** (`frame_id,track_id,center_x,center_y`): the frame_id corresponds to the integer in the frame filename (e.g. `frame_000150.jpg` → 150).
+
+### Quantifying tracking accuracy
+
+After modifying the tracking algorithm, **always evaluate** against ground truth to measure improvement or regression:
+
+```bash
+# Evaluate all annotated videos at once — reports per-video and aggregate metrics
+uv run python -m src.tracking.evaluate --batch
+
+# Evaluate a single video
+uv run python -m src.tracking.evaluate \
+  "output/tracking/<video_stem>" \
+  "annotations/tracking/<video_stem>/gt_centers.csv"
+```
+
+Key metrics reported: `mean_error_px`, `median_error_px`, `p90_error_px`, `p95_error_px`, `max_error_px`, `pct_within_threshold`, `detection_rate`. Lower pixel error = better tracking.
+
+### Visual comparison overlays
+
+Render side-by-side overlay videos showing GT (green) vs predicted (red) centers with per-frame error:
+
+```bash
+# Render overlays for all annotated videos
+uv run python -m src.tracking.overlay_gt --batch
+
+# Single video
+uv run python -m src.tracking.overlay_gt \
+  "output/tracking/<video_stem>" \
+  "annotations/tracking/<video_stem>/gt_centers.csv"
+```
+
+Output: `output/tracking/<video_stem>/overlay_gt.mp4` — shows green (GT) and red (predicted) circles with fading trace trails, error vectors, and a HUD with per-frame and running mean error.
+
+### Annotating new videos
+
+To add ground-truth annotations for a new video (requires extracted frames in `output/frames/`):
+
+```bash
+uv run python -m src.tracking.annotate_centers \
+  "output/frames/<video_stem>" \
+  "annotations/tracking/<video_stem>/gt_centers.csv" \
+  --step=10
+```
+
+Click the skier's center in each displayed frame. Controls: SPACE=next, LEFT=prev, j/k=±10, u=undo, q=save+quit. Resume with `--resume=path/to/csv`.
+
+### Tracking improvement workflow
+
+1. Run `uv run python -m src.tracking.evaluate --batch` — record baseline metrics
+2. Modify tracking code in [src/tracking/tracker.py](src/tracking/tracker.py) or [config.yaml](config.yaml)
+3. Re-run tracking: `uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage tracking`
+4. Re-evaluate: `uv run python -m src.tracking.evaluate --batch` — compare `mean_error_px`
+5. Render overlays: `uv run python -m src.tracking.overlay_gt --batch` — visually inspect changes
+
 ## Integration Points
 
 - **Ultralytics YOLO**: segmentation & pose models loaded from local checkpoints.
