@@ -161,6 +161,11 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "optical_flow_method": trk_cfg.get("optical_flow_method", "auto"),
             "flow_max_extrapolate_frames": trk_cfg.get("flow_max_extrapolate_frames", 30),
             "flow_min_keypoints": trk_cfg.get("flow_min_keypoints", 5),
+            "identity_guard_enabled": trk_cfg.get("identity_guard_enabled", True),
+            "identity_guard_max_jump_px": trk_cfg.get("identity_guard_max_jump_px", 150.0),
+            "identity_guard_reanchor_interval": trk_cfg.get("identity_guard_reanchor_interval", 50),
+            "identity_guard_reanchor_min_conf": trk_cfg.get("identity_guard_reanchor_min_conf", 0.5),
+            "identity_guard_max_drift_px": trk_cfg.get("identity_guard_max_drift_px", 200.0),
         }
     elif stage_name == "pose_2d":
         p2d_cfg = config.get("pose_2d", {})
@@ -555,6 +560,11 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
             optical_flow_method=trk_cfg.get("optical_flow_method", "auto"),
             flow_max_extrapolate_frames=trk_cfg.get("flow_max_extrapolate_frames", 30),
             flow_min_keypoints=trk_cfg.get("flow_min_keypoints", 5),
+            identity_guard_enabled=trk_cfg.get("identity_guard_enabled", True),
+            identity_guard_max_jump_px=trk_cfg.get("identity_guard_max_jump_px", 150.0),
+            identity_guard_reanchor_interval=trk_cfg.get("identity_guard_reanchor_interval", 50),
+            identity_guard_reanchor_min_conf=trk_cfg.get("identity_guard_reanchor_min_conf", 0.5),
+            identity_guard_max_drift_px=trk_cfg.get("identity_guard_max_drift_px", 200.0),
         )
         pose_manifest = track_manifest_path
 
