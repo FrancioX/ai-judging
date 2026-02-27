@@ -32,6 +32,7 @@ def segment_skier(
     person_class_id: int = 0,
     padding_ratio: float = 0.15,
     select_strategy: str = "center",
+    imgsz: int = 640,
 ) -> Path:
     """Run YOLO instance segmentation with tracking to isolate the skier.
 
@@ -52,6 +53,8 @@ def segment_skier(
     select_strategy : how to pick the main skier when multiple persons
         are detected — 'largest' (biggest bbox area), 'center' (closest
         to frame center), or 'highest_conf'.
+    imgsz : YOLO input resolution.  Higher values detect smaller/distant
+        persons but are slower.  Common values: 640 (default), 1280, 1920.
 
     Returns
     -------
@@ -73,7 +76,7 @@ def segment_skier(
 
     print(f"Running YOLO segmentation + tracking on {len(frame_paths)} frames …")
     print(f"  Model: {model_name}  |  Device: {device}  |  Conf: {confidence}")
-    print(f"  Strategy: {select_strategy}  |  Padding: {padding_ratio:.0%}")
+    print(f"  Strategy: {select_strategy}  |  Padding: {padding_ratio:.0%}  |  imgsz: {imgsz}")
 
     try:
         from ultralytics import YOLO
@@ -100,6 +103,7 @@ def segment_skier(
             verbose=False,
             persist=True,
             tracker="bytetrack.yaml",
+            imgsz=imgsz,
         )
         result = results[0]
 
@@ -179,6 +183,7 @@ def segment_skier(
         "confidence_threshold": confidence,
         "select_strategy": select_strategy,
         "padding_ratio": padding_ratio,
+        "imgsz": imgsz,
         "tracking_enabled": True,
         "tracker": "bytetrack",
         "n_frames": len(manifest_frames),

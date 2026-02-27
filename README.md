@@ -14,11 +14,12 @@ raw_video.mp4
 └─────────┬────────────────┘
           ▼
 ┌──────────────────────────┐
-│  2. Person Segmentation   │  (YOLO-Seg + ByteTrack)
+│  2. Person Segmentation   │  (YOLOv11x-Seg + ByteTrack, imgsz=1280)
 └─────────┬────────────────┘
           ▼
 ┌──────────────────────────┐
-│  3. Temporal Tracking     │  (track selection, gap fill, EMA smooth)
+│  3. Temporal Tracking     │  (multi-track merge, OF-guided identity,
+│                           │   Kalman CA+RTS smoothing)
 └─────────┬────────────────┘
           ▼
 ┌──────────────────────────┐
@@ -120,8 +121,9 @@ ai_judging/
 
 ## Temporal Skier Tracking
 
-The pipeline uses a two-stage approach to keep a consistent identity for the
-skier across all frames, even when the detector briefly loses track:
+The pipeline uses a multi-stage approach to keep a consistent identity for the
+skier across all frames, even when the detector briefly loses track or ByteTrack
+fragments the skier into multiple short-lived track IDs.
 
 ### Stage 2 — Segmentation with ByteTrack
 
@@ -132,40 +134,105 @@ detected person across frames.  The segmentation manifest stores *all*
 detected persons per frame (with their track IDs), not just the selected one,
 so the tracking stage has full information to work with.
 
-### Stage 3 — Track Selection, Gap Filling & Smoothing
+**Input resolution (`imgsz`)** is set to **1280** (up from the default 640).
+This doubles the effective resolution, significantly improving detection of
+small/distant skiers. In testing, this reduced zero-detection frames from 37%
+to 30% on the hardest video and improved tracking accuracy across all videos.
+
+### Stage 3 — Track Selection, Merge & Smoothing
 
 `track_skier()` in `src/tracking/tracker.py` processes the raw detections
-in three phases:
+in five phases:
 
-1. **Track selection** — Each ByteTrack ID is scored with a weighted
-   composite:
+#### Phase A — Multi-Track Scoring & Merge
 
-   ```
-   score = w_conf × mean_confidence
-         + w_center × center_proximity
-         + w_length × track_length_ratio
-   ```
+Each ByteTrack ID is scored with a weighted composite:
 
-   *Center proximity* is `1 − d / d_max` where `d` is the Euclidean
-   distance from the bbox centre to the frame centre.  This encodes the
-   assumption that the target skier will generally be near the middle of the
-   frame.  Tracks shorter than `min_track_frames` are discarded.  The
-   highest-scoring track is selected as the skier.
+```
+score = w_conf × mean_confidence
+      + w_center × center_proximity
+      + w_length × track_length_ratio
+```
 
-2. **Gap filling** — Every frame is guaranteed to have exactly one
-   bounding box.  For frames where the selected track has no detection,
-   bbox coordinates are **linearly interpolated** between the nearest
-   detected neighbours.  Leading/trailing gaps are filled by propagating
-   the nearest anchor.  No frame is ever left without a bbox.
+All tracks above `merge_score_threshold` are selected for merging to handle
+track fragmentation (same skier split across multiple track IDs due to
+occlusion or detection drops).
 
-3. **Temporal smoothing** — A zero-phase **exponential moving average**
-   (forward + backward EMA pass) is applied to the bbox coordinates to
-   reduce frame-to-frame jitter.  The window size is configurable via
-   `smooth_window` (set to `0` to disable).
+A **multi-candidate optical-flow trace** is built to guide merge conflict
+resolution. Unlike single-track seeding, this OF trace can re-anchor to the
+closest candidate detection from *any* track within a distance threshold
+(`max_reanchor_dist_px=150px`), allowing it to seamlessly follow the skier
+across ByteTrack track-ID boundaries.
 
-The tracking stage writes its own crops and manifest
-(`output/tracking/<video>/tracking.json`), which the downstream 2D pose
-stage reads automatically.
+When multiple candidates exist for a frame, the merge resolver scores each
+candidate on four axes:
+
+| Signal | Weight | Description |
+|--------|--------|-------------|
+| **Quality** | `w_conf + w_center` | Detection confidence + center proximity |
+| **Continuity** | `w_continuity=0.6` | Proximity to predicted position (previous bbox + OF displacement) |
+| **Track stickiness** | `w_track_stickiness=0.4` | Bonus for same ByteTrack ID as previous frame |
+| **OF agreement** | `w_of_agreement=1.5` | Proximity to independent OF trace prediction |
+
+During **genuine conflicts** (candidate spread > 100px with OF available),
+the OF agreement weight is tripled (×3) and stickiness is reduced (×0.2),
+preventing the tracker from locking onto the wrong person during crossover
+events.
+
+Candidates further than `2× of_tight_radius_px` (300px) from the OF trace
+are pre-filtered before scoring.
+
+#### Phase A.6 — Identity Guard
+
+An independent OF trace is maintained and detections that jump too far from
+the predicted position are rejected (`max_jump_px=150`). The trace is
+periodically re-anchored to confident detections to prevent drift.
+
+#### Phase B — Gap Filling with Optical Flow
+
+Every frame is guaranteed exactly one bounding box. Detection gaps are filled
+using **optical flow** to propagate motion between frames:
+
+- **Sparse Lucas-Kanade flow** (preferred): tracks feature points inside the
+  bbox region, computes median displacement with outlier rejection via MAD.
+- **Dense Farneback flow** (fallback): computes pixel-level motion vectors
+  when sparse tracking has insufficient keypoints.
+- **Bidirectional blending** for internal gaps: forward and backward flow
+  predictions are linearly blended across the gap.
+- **Anchor propagation** for leading/trailing gaps: flow is propagated up to
+  `flow_max_extrapolate_frames` (30) frames; beyond that, the anchor bbox is
+  copied.
+
+#### Phase C — Kalman CA+RTS Smoothing
+
+A **constant-acceleration Kalman filter** with **Rauch-Tung-Striebel (RTS)
+backward smoother** replaces the earlier EMA smoothing. The state vector is
+`[cx, cy, vx, vy, ax, ay, w, h]`. Detected frames receive lower measurement
+noise than interpolated frames. Optical flow velocities are incorporated as
+velocity measurements when available.
+
+#### Phase D — Crop Generation
+
+Padded bounding boxes are used to extract crops for downstream 2D pose
+estimation. Every frame has exactly one crop.
+
+### Tracking Accuracy
+
+Evaluated against hand-annotated ground truth on 3 competition videos
+(center-point annotations every ~10 frames, linearly interpolated):
+
+| Video | Mean Error (px) | HOTA |
+|-------|:---:|:---:|
+| Arno Vuarnier | 63.5 | 0.732 |
+| Andreas Bakke | 18.2 | 0.895 |
+| Lach Powell | 36.9 | 0.880 |
+| **Overall** | **39.5** | **0.836** |
+
+Key improvement history:
+- Baseline (single-track, EMA): 107.4px mean, 0.710 HOTA
+- OF-weighted merge resolution: 64.7px, 0.760 HOTA
+- OF candidate pre-filtering: 62.5px, 0.766 HOTA
+- **imgsz=1280 + multi-candidate OF trace: 39.5px, 0.836 HOTA**
 
 ### Gap Filling with Optical Flow
 
@@ -175,50 +242,22 @@ default, gaps are filled using **optical flow** to propagate motion between
 frames—preserving natural skier movement trajectories rather than crude
 linear interpolation.
 
-**How it works:**
+**Fallback to linear interpolation**: If optical flow is disabled via
+`optical_flow_method: "none"` or numpy is unavailable, gaps are filled
+with simple linear interpolation of bbox coordinates.
 
-- **Sparse Lucas-Kanade flow** (preferred) detects and tracks feature
-  points inside and around the bounding box region across two consecutive
-  frames, computing a median displacement of reliable (inlier) points.
-  Outliers are rejected via median absolute deviation.  If fewer than
-  `flow_min_keypoints` features are successfully tracked, sparse flow
-  falls back to dense flow.
+### Tracking Evaluation & Ground Truth
 
-- **Dense Farneback flow** (fallback) computes motion vectors for every
-  pixel in a region around the bbox.  The mean flow within the original
-  bbox region is used as the displacement estimate.
+Three videos have hand-annotated center-point ground truth in
+`annotations/tracking/<video_stem>/gt_centers.csv`. Evaluate with:
 
-- **Bidirectional propagation** (internal gaps): Forward flow is computed
-  from the left anchor and backward flow from the right anchor, then the
-  two estimates are blended linearly across the gap.  This produces
-  physically plausible intermediate positions.
+```bash
+# Evaluate all annotated videos (reports per-video + aggregate metrics)
+uv run python -m src.tracking.evaluate --batch
 
-- **Anchor propagation** (leading/trailing gaps): Leading frames (before
-  the first detection) and trailing frames (after the last detection) are
-  filled by repeatedly applying flow backward/forward up to
-  `flow_max_extrapolate_frames` frames.  Beyond that distance, the nearest
-  anchor bbox is copied to avoid unrealistic extrapolation.
-
-- **Fallback to linear interpolation**: If optical flow is disabled via
-  `optical_flow_method: "none"` or numpy is unavailable, gaps are filled
-  with simple linear interpolation of bbox coordinates.
-
-**Configuration:**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `optical_flow_method` | `"auto"` | `"auto"` (sparse→dense), `"sparse"` (Lucas-Kanade only), `"dense"` (Farneback only), or `"none"` (linear interpolation) |
-| `flow_min_keypoints` | `5` | Minimum tracked features before sparse LK falls back to dense |
-| `flow_max_extrapolate_frames` | `30` | Maximum frames to propagate via flow for leading/trailing gaps |
-
-**Velocity-aware smoothing:**
-
-When optical flow is active, the per-frame flow displacement is recorded in
-the manifest (`flow_displacement` field).  The temporal smoothing pass is
-then **velocity-aware**: frames with high optical flow (fast-moving skier)
-are smoothed less, while static frames are smoothed more.  This preserves
-sharp directional changes during tricks while reducing jitter during slow
-passages.
+# Render GT overlay videos (green=GT, red=predicted, with error HUD)
+uv run python -m src.tracking.overlay_gt --batch
+```
 
 ### Configuration
 
@@ -231,21 +270,25 @@ All tracking parameters live in the `tracking:` section of `config.yaml`:
 | `w_center` | `0.5` | Weight for center-of-frame proximity |
 | `w_length` | `0.2` | Weight for track duration ratio |
 | `min_track_frames` | `10` | Ignore tracks shorter than this |
-| `smooth_window` | `5` | EMA window for bbox smoothing (0 = off) |
-| `optical_flow_method` | `"auto"` | Optical flow method: `"auto"`, `"sparse"`, `"dense"`, or `"none"` |
-| `flow_min_keypoints` | `5` | Min tracked features for sparse Lucas-Kanade before fallback to dense |
-| `flow_max_extrapolate_frames` | `30` | Max frames to propagate via optical flow for leading/trailing gaps |
+| `smooth_window` | `5` | Kalman smoother window (0 = off) |
+| `merge_tracks` | `true` | Merge multiple high-scoring tracks |
+| `merge_score_threshold` | `0.3` | Minimum score for track inclusion in merge |
+| `optical_flow_method` | `"auto"` | `"auto"` (sparse→dense), `"sparse"`, `"dense"`, or `"none"` |
+| `flow_min_keypoints` | `5` | Min tracked features for sparse LK before fallback to dense |
+| `flow_max_extrapolate_frames` | `30` | Max frames to propagate via OF for leading/trailing gaps |
+| `identity_guard_enabled` | `true` | Hybrid OF identity guard |
+| `identity_guard_max_jump_px` | `150` | Reject detection if too far from OF prediction |
 
 Set `tracking.enabled: false` to bypass tracking entirely and fall back to
 the per-frame segmentation selection (previous behaviour).
 
 ## Model Notes
 
-| Stage | Model | Why |
-|-------|-------|-----|
-| Person Segmentation | **YOLOv11x-seg** (Ultralytics) | Pixel-level instance masks for clean crops |
-| 2D Pose | **YOLO11x-Pose** (Ultralytics) | Single-model 17-keypoint detection, MPS-native |
-| 3D Lift | **MotionBERT** | Temporal transformer, state-of-the-art monocular 3D |
-| Ski Det | **GroundingDINO + SAM2** | Zero-shot prompted detection ("ski") with pixel-precise masks |
+| Stage | Model | Config | Why |
+|-------|-------|--------|-----|
+| Person Segmentation | **YOLOv11x-seg** (Ultralytics) | `imgsz=1280` | Pixel-level instance masks for clean crops; higher resolution improves small-person recall |
+| 2D Pose | **YOLO11x-Pose** (Ultralytics) | `imgsz=640` | Single-model 17-keypoint detection, MPS-native |
+| 3D Lift | **MotionBERT** | — | Temporal transformer, state-of-the-art monocular 3D |
+| Ski Det | **GroundingDINO + SAM2** | — | Zero-shot prompted detection ("ski") with pixel-precise masks |
 
 The pipeline includes fallback stubs so you can run the end-to-end flow even before downloading model checkpoints.

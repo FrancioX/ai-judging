@@ -23,6 +23,7 @@ segmentation:
   confidence: 0.5
   padding_ratio: 0.50            # extra padding around bbox (fraction)
   select_strategy: "center"     # largest | center | highest_conf
+  imgsz: 1280                    # YOLO input resolution (640/1280/1920)
 
 # Temporal tracking — selects the best skier track from ByteTrack IDs,
 # smooths bounding boxes and fills detection gaps by interpolation.

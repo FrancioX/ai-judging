@@ -145,6 +145,7 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "confidence": seg_cfg.get("confidence", 0.5),
             "padding_ratio": seg_cfg.get("padding_ratio", 0.15),
             "select_strategy": seg_cfg.get("select_strategy", "center"),
+            "imgsz": seg_cfg.get("imgsz", 640),
         }
     elif stage_name == "tracking":
         trk_cfg = config.get("tracking", {})

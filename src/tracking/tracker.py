@@ -234,27 +234,29 @@ def track_skier(
                 fid = o["frame_id"]
                 frame_candidates.setdefault(fid, []).append(o)
 
-        # Build a preliminary OF trace from the best track BEFORE merge,
-        # so merge resolution can use it as an independent reference.
+        # Build a preliminary OF trace using ALL candidates for re-anchoring.
+        # Unlike single-track seeding, this follows the skier across track
+        # boundaries by re-anchoring to the closest candidate within range.
         preliminary_of_trace: dict[int, tuple[float, float]] = {}
         use_flow_for_merge = (
             optical_flow_method != "none"
             and _HAS_NUMPY
         )
         if use_flow_for_merge:
-            best_track_obs = {
-                o["frame_id"]: o for o in tracks[track_scores[0][0]]
-            }
-            print(f"  Building preliminary OF trace from best track "
-                  f"({track_scores[0][0]}, {len(best_track_obs)} detections)…")
-            preliminary_of_trace = _maintain_of_trace(
-                best_track_obs, n_frames, img_w, img_h,
+            # Seed from the best track's first detection
+            best_track_obs_list = tracks[track_scores[0][0]]
+            seed_obs = best_track_obs_list[0] if best_track_obs_list else None
+            print(f"  Building multi-candidate OF trace (seed: track "
+                  f"{track_scores[0][0]}, {len(frame_candidates)} frames with detections)…")
+            preliminary_of_trace = _build_multi_candidate_of_trace(
+                frame_candidates, n_frames, img_w, img_h,
                 frame_dir, seg_frames,
+                seed_obs=seed_obs,
                 method=optical_flow_method,
                 min_keypoints=flow_min_keypoints,
-                reanchor_interval=identity_guard_reanchor_interval,
-                reanchor_min_conf=identity_guard_reanchor_min_conf,
-                max_drift_px=identity_guard_max_drift_px,
+                max_reanchor_dist_px=150.0,
+                reanchor_interval=5,
+                max_drift_px=150.0,
             )
             print(f"  → Preliminary OF trace: {len(preliminary_of_trace)} frames")
 
@@ -557,117 +559,144 @@ def _resolve_merge_conflicts(
         return _frame_cache.get(fid)
 
     sorted_fids = sorted(frame_candidates)
-    selected_obs: dict[int, dict] = {}
-    prev_bbox: list[int] | None = None
-    prev_fid: int | None = None
-    prev_track_id: int | None = None
 
-    for fid in sorted_fids:
-        candidates = frame_candidates[fid]
+    # Helper: score one direction (forward or backward)
+    def _score_pass(
+        fid_order: list[int],
+    ) -> dict[int, dict]:
+        """Run a single-direction pass, returning {fid: best_det}."""
+        pass_result: dict[int, dict] = {}
+        p_bbox: list[int] | None = None
+        p_fid: int | None = None
+        p_track_id: int | None = None
 
-        if len(candidates) == 1:
-            selected_obs[fid] = candidates[0]
-        else:
-            # Compute OF-predicted center from previous bbox
-            predicted_cx, predicted_cy = None, None
-            if prev_bbox is not None:
-                pred_cx = (prev_bbox[0] + prev_bbox[2]) / 2
-                pred_cy = (prev_bbox[1] + prev_bbox[3]) / 2
+        for fid in fid_order:
+            candidates = frame_candidates[fid]
 
-                if use_flow and prev_fid is not None:
-                    img_prev = _get_frame(prev_fid)
-                    img_cur = _get_frame(fid)
-                    if img_prev is not None and img_cur is not None:
-                        dx, dy, _m = _compute_flow_displacement(
-                            img_prev, img_cur, prev_bbox,
-                            method=optical_flow_method,
-                            min_keypoints=flow_min_keypoints,
-                        )
-                        pred_cx += dx
-                        pred_cy += dy
-
-                predicted_cx, predicted_cy = pred_cx, pred_cy
-
-            # Get OF trace predition for this frame (if available)
-            of_pred_cx, of_pred_cy = None, None
+            # Filter candidates against OF trace: reject detections far
+            # from the OF prediction (likely wrong person).
             if of_trace is not None and fid in of_trace:
-                of_pred_cx, of_pred_cy = of_trace[fid]
-
-            best_obs = None
-            best_score = -1.0
-
-            for det in candidates:
-                # Static quality score (confidence + center)
-                quality = _score_detection(
-                    det, cx, cy, max_dist, w_conf, w_center,
-                )
-
-                # Continuity bonus — distance to predicted position
-                if predicted_cx is not None and predicted_cy is not None:
+                of_cx, of_cy = of_trace[fid]
+                near_of = []
+                for det in candidates:
                     det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
                     det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
-                    dist = math.sqrt(
-                        (det_cx - predicted_cx) ** 2
-                        + (det_cy - predicted_cy) ** 2
+                    dist_to_of = math.sqrt(
+                        (det_cx - of_cx) ** 2 + (det_cy - of_cy) ** 2
                     )
-                    # Use tight radius for sharp penalty on large jumps
-                    continuity = max(0.0, 1.0 - dist / of_tight_radius_px)
-                else:
-                    continuity = 0.5  # neutral when no history
+                    if dist_to_of < of_tight_radius_px * 2.0:
+                        near_of.append(det)
+                # Only replace if we still have at least 1 candidate
+                if near_of:
+                    candidates = near_of
 
-                # Track-ID stickiness — prefer same track as previous frame
-                det_track_id = det.get("track_id")
-                stickiness = (
-                    1.0
-                    if prev_track_id is not None
-                    and det_track_id is not None
-                    and det_track_id == prev_track_id
-                    else 0.0
-                )
+            if len(candidates) == 1:
+                pass_result[fid] = candidates[0]
+                p_bbox = candidates[0]["bbox"]
+                p_track_id = candidates[0].get("track_id")
+                p_fid = fid
+            elif len(candidates) > 1:
+                # OF-predicted center from previous chosen bbox
+                predicted_cx, predicted_cy = None, None
+                if p_bbox is not None:
+                    pred_cx = (p_bbox[0] + p_bbox[2]) / 2
+                    pred_cy = (p_bbox[1] + p_bbox[3]) / 2
 
-                # OF agreement — distance to OF trace prediction
-                # Uses a TIGHT radius (150px) instead of image diagonal
-                # so the signal sharply penalises candidates far from OF.
-                of_agreement = 0.0
-                if of_pred_cx is not None and of_pred_cy is not None:
-                    det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
-                    det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
-                    dist = math.sqrt(
-                        (det_cx - of_pred_cx) ** 2
-                        + (det_cy - of_pred_cy) ** 2
+                    if use_flow and p_fid is not None:
+                        img_prev = _get_frame(p_fid)
+                        img_cur = _get_frame(fid)
+                        if img_prev is not None and img_cur is not None:
+                            dx, dy, _m = _compute_flow_displacement(
+                                img_prev, img_cur, p_bbox,
+                                method=optical_flow_method,
+                                min_keypoints=flow_min_keypoints,
+                            )
+                            pred_cx += dx
+                            pred_cy += dy
+
+                    predicted_cx, predicted_cy = pred_cx, pred_cy
+
+                # OF trace prediction for this frame
+                of_pred_cx, of_pred_cy = None, None
+                if of_trace is not None and fid in of_trace:
+                    of_pred_cx, of_pred_cy = of_trace[fid]
+
+                best_obs = None
+                best_score = -1.0
+
+                # Measure spread to detect genuine conflicts
+                cxs = [(d["bbox"][0] + d["bbox"][2]) / 2 for d in candidates]
+                cys = [(d["bbox"][1] + d["bbox"][3]) / 2 for d in candidates]
+                spread = max(max(cxs) - min(cxs), max(cys) - min(cys))
+                is_conflict = spread > 100.0
+
+                for det in candidates:
+                    quality = _score_detection(
+                        det, cx, cy, max_dist, w_conf, w_center,
                     )
-                    of_agreement = max(0.0, 1.0 - dist / of_tight_radius_px)
 
-                # Adaptive OF weight: boost when candidates are spread
-                # far apart (genuine conflict) vs clustered (minor jitter).
-                effective_of_weight = w_of_agreement
-                if of_pred_cx is not None and len(candidates) > 1:
-                    # Measure spread of candidates
-                    cxs = [(d["bbox"][0] + d["bbox"][2]) / 2 for d in candidates]
-                    cys = [(d["bbox"][1] + d["bbox"][3]) / 2 for d in candidates]
-                    spread = max(
-                        max(cxs) - min(cxs),
-                        max(cys) - min(cys),
+                    # Continuity bonus
+                    if predicted_cx is not None and predicted_cy is not None:
+                        det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
+                        det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
+                        dist = math.sqrt(
+                            (det_cx - predicted_cx) ** 2
+                            + (det_cy - predicted_cy) ** 2
+                        )
+                        continuity = max(0.0, 1.0 - dist / of_tight_radius_px)
+                    else:
+                        continuity = 0.5
+
+                    # Track-ID stickiness
+                    det_track_id = det.get("track_id")
+                    stickiness = (
+                        1.0
+                        if p_track_id is not None
+                        and det_track_id is not None
+                        and det_track_id == p_track_id
+                        else 0.0
                     )
-                    if spread > 100.0:
-                        # Large spread → strong conflict → trust OF more
-                        effective_of_weight = w_of_agreement * 2.0
 
-                combined = (
-                    quality
-                    + w_continuity * continuity
-                    + w_track_stickiness * stickiness
-                    + effective_of_weight * of_agreement
-                )
-                if combined > best_score:
-                    best_score = combined
-                    best_obs = det
+                    # OF agreement
+                    of_agreement = 0.0
+                    if of_pred_cx is not None and of_pred_cy is not None:
+                        det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
+                        det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
+                        dist = math.sqrt(
+                            (det_cx - of_pred_cx) ** 2
+                            + (det_cy - of_pred_cy) ** 2
+                        )
+                        of_agreement = max(0.0, 1.0 - dist / of_tight_radius_px)
 
-            selected_obs[fid] = best_obs  # type: ignore[assignment]
+                    # During genuine conflicts: OF dominates, stickiness reduced
+                    if is_conflict and of_pred_cx is not None:
+                        effective_of_weight = w_of_agreement * 3.0
+                        effective_stickiness = w_track_stickiness * 0.2
+                    else:
+                        effective_of_weight = w_of_agreement
+                        effective_stickiness = w_track_stickiness
 
-        prev_bbox = selected_obs[fid]["bbox"]
-        prev_track_id = selected_obs[fid].get("track_id")
-        prev_fid = fid
+                    combined = (
+                        quality
+                        + w_continuity * continuity
+                        + effective_stickiness * stickiness
+                        + effective_of_weight * of_agreement
+                    )
+                    if combined > best_score:
+                        best_score = combined
+                        best_obs = det
+
+                pass_result[fid] = best_obs  # type: ignore[assignment]
+
+                chosen = pass_result[fid]
+                p_bbox = chosen["bbox"]
+                p_track_id = chosen.get("track_id")
+                p_fid = fid
+
+        return pass_result
+
+    # Forward pass only (bidirectional caused regressions on good videos)
+    selected_obs = _score_pass(sorted_fids)
 
     return selected_obs
 
@@ -1492,6 +1521,197 @@ def _maintain_of_trace(
             current_cx = max(0, min(current_cx, img_w - 1))
             current_cy = max(0, min(current_cy, img_h - 1))
 
+            of_trace[fid] = (current_cx, current_cy)
+
+    return of_trace
+
+
+def _build_multi_candidate_of_trace(
+    frame_candidates: dict[int, list[dict]],
+    n_frames: int,
+    img_w: int,
+    img_h: int,
+    frame_dir: Path,
+    seg_frames: list[dict],
+    *,
+    seed_obs: dict | None = None,
+    method: str = "auto",
+    min_keypoints: int = 5,
+    max_reanchor_dist_px: float = 150.0,
+    reanchor_interval: int = 5,
+    max_drift_px: float = 150.0,
+) -> dict[int, tuple[float, float]]:
+    """Build an OF trace that can re-anchor to ANY candidate detection.
+
+    Unlike ``_maintain_of_trace`` which only re-anchors to detections from
+    a single pre-selected track, this function examines ALL candidate
+    detections at each frame and re-anchors to the closest one within
+    ``max_reanchor_dist_px``.  This lets the OF trace follow the skier
+    seamlessly across ByteTrack track-ID boundaries.
+
+    Parameters
+    ----------
+    frame_candidates : mapping from ``frame_id`` to list of candidate dicts
+        (each with ``bbox``, ``confidence``).
+    n_frames : total number of frames in the video.
+    img_w, img_h : image dimensions.
+    frame_dir : directory containing frame images.
+    seg_frames : list of segmentation frame dicts (for filenames).
+    seed_obs : optional initial observation to seed from.  If *None*, seeds
+        from the highest-confidence detection in the first frame with
+        candidates.
+    method : optical flow method.
+    min_keypoints : sparse→dense fallback threshold.
+    max_reanchor_dist_px : only re-anchor to a candidate within this distance
+        from the current OF prediction.
+    reanchor_interval : re-anchor every N frames that have a close candidate.
+    max_drift_px : force re-anchor if cumulative drift exceeds this.
+
+    Returns
+    -------
+    Dict mapping frame_id → (of_cx, of_cy).
+    """
+    if not frame_candidates or not _HAS_NUMPY:
+        return {}
+
+    # --- Determine seed position ---
+    if seed_obs is not None:
+        seed_bbox = seed_obs["bbox"]
+        seed_fid = seed_obs["frame_id"]
+        seed_cx = (seed_bbox[0] + seed_bbox[2]) / 2.0
+        seed_cy = (seed_bbox[1] + seed_bbox[3]) / 2.0
+    else:
+        # Find the highest-confidence detection across all early candidates
+        best_seed: dict | None = None
+        best_conf = -1.0
+        for fid in sorted(frame_candidates):
+            for det in frame_candidates[fid]:
+                if det.get("confidence", 0) > best_conf:
+                    best_conf = det["confidence"]
+                    best_seed = det
+                    seed_fid = fid
+            # Only look at first few frames with candidates
+            if best_seed is not None and fid > sorted(frame_candidates)[0] + 50:
+                break
+        if best_seed is None:
+            return {}
+        seed_bbox = best_seed["bbox"]
+        seed_cx = (seed_bbox[0] + seed_bbox[2]) / 2.0
+        seed_cy = (seed_bbox[1] + seed_bbox[3]) / 2.0
+
+    of_trace: dict[int, tuple[float, float]] = {seed_fid: (seed_cx, seed_cy)}
+
+    # Frame cache
+    _frame_cache: dict[int, "np.ndarray | None"] = {}
+
+    def _get_frame_img(fid: int) -> "np.ndarray | None":
+        if fid in _frame_cache:
+            return _frame_cache[fid]
+        if 0 <= fid < n_frames:
+            img = _read_gray(frame_dir, seg_frames[fid]["frame_file"])
+            if len(_frame_cache) > 30:
+                oldest = min(_frame_cache.keys())
+                del _frame_cache[oldest]
+            if img is not None:
+                _frame_cache[fid] = img
+            return img
+        return None
+
+    def _find_closest_candidate(
+        fid: int, pred_cx: float, pred_cy: float,
+    ) -> tuple[float, float, float] | None:
+        """Find the candidate detection closest to (pred_cx, pred_cy).
+
+        Returns (cx, cy, dist) or None if no candidates in this frame.
+        """
+        if fid not in frame_candidates:
+            return None
+        best_cx, best_cy, best_dist = 0.0, 0.0, float("inf")
+        for det in frame_candidates[fid]:
+            bbox = det["bbox"]
+            dcx = (bbox[0] + bbox[2]) / 2.0
+            dcy = (bbox[1] + bbox[3]) / 2.0
+            d = math.sqrt((dcx - pred_cx) ** 2 + (dcy - pred_cy) ** 2)
+            if d < best_dist:
+                best_dist = d
+                best_cx, best_cy = dcx, dcy
+        return (best_cx, best_cy, best_dist)
+
+    # --- Forward trace ---
+    current_cx, current_cy = seed_cx, seed_cy
+    cumulative_drift = 0.0
+    frames_since_anchor = 0
+
+    for fid in range(seed_fid + 1, n_frames):
+        img_prev = _get_frame_img(fid - 1)
+        img_cur = _get_frame_img(fid)
+
+        dx, dy = 0.0, 0.0
+        if img_prev is not None and img_cur is not None:
+            pad = 30
+            temp_bbox = [
+                max(0, int(current_cx - pad)),
+                max(0, int(current_cy - pad)),
+                min(img_w, int(current_cx + pad)),
+                min(img_h, int(current_cy + pad)),
+            ]
+            dx, dy, _ = _compute_flow_displacement(
+                img_prev, img_cur, temp_bbox,
+                method=method, min_keypoints=min_keypoints,
+            )
+
+        current_cx += dx
+        current_cy += dy
+        current_cx = max(0, min(current_cx, img_w - 1))
+        current_cy = max(0, min(current_cy, img_h - 1))
+
+        of_trace[fid] = (current_cx, current_cy)
+        cumulative_drift += math.sqrt(dx * dx + dy * dy)
+        frames_since_anchor += 1
+
+        # Try to re-anchor to closest candidate
+        closest = _find_closest_candidate(fid, current_cx, current_cy)
+        if closest is not None:
+            c_cx, c_cy, c_dist = closest
+            should_reanchor = (
+                c_dist < max_reanchor_dist_px
+                and (
+                    frames_since_anchor >= reanchor_interval
+                    or cumulative_drift > max_drift_px
+                )
+            )
+            if should_reanchor:
+                current_cx = c_cx
+                current_cy = c_cy
+                of_trace[fid] = (c_cx, c_cy)
+                cumulative_drift = 0.0
+                frames_since_anchor = 0
+
+    # --- Backward trace (leading frames) ---
+    if seed_fid > 0:
+        current_cx, current_cy = seed_cx, seed_cy
+        for fid in range(seed_fid - 1, -1, -1):
+            img_cur = _get_frame_img(fid)
+            img_next = _get_frame_img(fid + 1)
+
+            dx, dy = 0.0, 0.0
+            if img_cur is not None and img_next is not None:
+                pad = 30
+                temp_bbox = [
+                    max(0, int(current_cx - pad)),
+                    max(0, int(current_cy - pad)),
+                    min(img_w, int(current_cx + pad)),
+                    min(img_h, int(current_cy + pad)),
+                ]
+                dx, dy, _ = _compute_flow_displacement(
+                    img_next, img_cur, temp_bbox,
+                    method=method, min_keypoints=min_keypoints,
+                )
+
+            current_cx += dx
+            current_cy += dy
+            current_cx = max(0, min(current_cx, img_w - 1))
+            current_cy = max(0, min(current_cy, img_h - 1))
             of_trace[fid] = (current_cx, current_cy)
 
     return of_trace
