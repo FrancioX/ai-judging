@@ -166,6 +166,11 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "identity_guard_reanchor_interval": trk_cfg.get("identity_guard_reanchor_interval", 50),
             "identity_guard_reanchor_min_conf": trk_cfg.get("identity_guard_reanchor_min_conf", 0.5),
             "identity_guard_max_drift_px": trk_cfg.get("identity_guard_max_drift_px", 200.0),
+            "cmc_enabled": trk_cfg.get("cmc_enabled", True),
+            "cmc_method": trk_cfg.get("cmc_method", "orb"),
+            "cmc_exclude_margin": trk_cfg.get("cmc_exclude_margin", 1.5),
+            "cmc_min_features": trk_cfg.get("cmc_min_features", 20),
+            "cmc_ransac_threshold": trk_cfg.get("cmc_ransac_threshold", 3.0),
         }
     elif stage_name == "pose_2d":
         p2d_cfg = config.get("pose_2d", {})
@@ -565,6 +570,11 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
             identity_guard_reanchor_interval=trk_cfg.get("identity_guard_reanchor_interval", 50),
             identity_guard_reanchor_min_conf=trk_cfg.get("identity_guard_reanchor_min_conf", 0.5),
             identity_guard_max_drift_px=trk_cfg.get("identity_guard_max_drift_px", 200.0),
+            cmc_enabled=trk_cfg.get("cmc_enabled", True),
+            cmc_method=trk_cfg.get("cmc_method", "orb"),
+            cmc_exclude_margin=trk_cfg.get("cmc_exclude_margin", 1.5),
+            cmc_min_features=trk_cfg.get("cmc_min_features", 20),
+            cmc_ransac_threshold=trk_cfg.get("cmc_ransac_threshold", 3.0),
         )
         pose_manifest = track_manifest_path
 

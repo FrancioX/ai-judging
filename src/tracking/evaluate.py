@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.tracking.hota import compute_hota
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -257,6 +259,18 @@ def evaluate_tracking(
         "distance_threshold_px": distance_threshold,
     }
 
+    # Compute HOTA metrics (identity preservation)
+    try:
+        hota_results = compute_hota(preds, gt)
+        results["hota"] = round(hota_results["hota"], 3)
+        results["hota_det_a"] = round(hota_results["det_a"], 3)
+        results["hota_ass_a"] = round(hota_results["ass_a"], 3)
+    except Exception as e:
+        print(f"  Warning: HOTA computation failed: {e}")
+        results["hota"] = None
+        results["hota_det_a"] = None
+        results["hota_ass_a"] = None
+
     _print_results(results)
     return results
 
@@ -266,11 +280,27 @@ def _print_results(results: dict) -> None:
     print(f"\n{'=' * 60}")
     print(f"  TRACKING EVALUATION — {results['video']}")
     print(f"{'=' * 60}")
-    for k, v in results.items():
-        if k == "video":
-            continue
-        label = k.replace("_", " ").title()
-        print(f"  {label:>30s}:  {v}")
+
+    # Print standard metrics
+    standard_keys = [
+        "gt_keyframes", "gt_frames_evaluated", "gt_frames_no_prediction",
+        "mean_error_px", "median_error_px", "std_error_px",
+        "max_error_px", "p90_error_px", "p95_error_px",
+        "pct_within_threshold", "detection_rate", "distance_threshold_px"
+    ]
+
+    for k in standard_keys:
+        if k in results:
+            label = k.replace("_", " ").title()
+            print(f"  {label:>30s}:  {results[k]}")
+
+    # Print HOTA metrics if available
+    if results.get("hota") is not None:
+        print(f"\n  {'--- HOTA Metrics (Identity) ---':>30s}")
+        print(f"  {'HOTA Score':>30s}:  {results['hota']}")
+        print(f"  {'Detection Accuracy (DetA)':>30s}:  {results['hota_det_a']}")
+        print(f"  {'Association Accuracy (AssA)':>30s}:  {results['hota_ass_a']}")
+
     print(f"{'=' * 60}\n")
 
 
@@ -325,6 +355,15 @@ def evaluate_all(
         print(f"  {'Overall mean error (px)':>30s}:  {np.mean(mean_errors):.1f}")
         print(f"  {'Worst mean error (px)':>30s}:  {np.max(mean_errors):.1f}")
         print(f"  {'Best mean error (px)':>30s}:  {np.min(mean_errors):.1f}")
+
+        # HOTA summary if available
+        hota_scores = [r["hota"] for r in results if r.get("hota") is not None]
+        if hota_scores:
+            print(f"\n  {'--- HOTA Summary ---':>30s}")
+            print(f"  {'Mean HOTA':>30s}:  {np.mean(hota_scores):.3f}")
+            print(f"  {'Best HOTA':>30s}:  {np.max(hota_scores):.3f}")
+            print(f"  {'Worst HOTA':>30s}:  {np.min(hota_scores):.3f}")
+
         print(f"{'=' * 60}\n")
 
     return results

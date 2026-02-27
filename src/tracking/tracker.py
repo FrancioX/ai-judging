@@ -59,6 +59,11 @@ def track_skier(
     identity_guard_reanchor_interval: int = 50,
     identity_guard_reanchor_min_conf: float = 0.5,
     identity_guard_max_drift_px: float = 200.0,
+    cmc_enabled: bool = True,
+    cmc_method: str = "orb",
+    cmc_exclude_margin: float = 1.5,
+    cmc_min_features: int = 20,
+    cmc_ransac_threshold: float = 3.0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -99,6 +104,16 @@ def track_skier(
         re-anchor.
     identity_guard_max_drift_px : force re-anchor if OF drift since last
         anchor exceeds this threshold.
+    cmc_enabled : if True, enable camera motion compensation to separate
+        camera motion from object motion in optical flow.
+    cmc_method : ``"orb"`` (ORB features, fastest) or ``"ecc"``
+        (Enhanced Correlation Coefficient, more robust) or ``"none"``.
+    cmc_exclude_margin : multiplier for skier bbox exclusion zone
+        (1.5 = exclude 1.5× bbox area from feature matching).
+    cmc_min_features : minimum matched features required for valid
+        camera motion estimate (fallback to no compensation if lower).
+    cmc_ransac_threshold : pixel threshold for RANSAC outlier rejection
+        in homography estimation.
 
     Returns
     -------
@@ -219,13 +234,37 @@ def track_skier(
                 fid = o["frame_id"]
                 frame_candidates.setdefault(fid, []).append(o)
 
+        # Build a preliminary OF trace from the best track BEFORE merge,
+        # so merge resolution can use it as an independent reference.
+        preliminary_of_trace: dict[int, tuple[float, float]] = {}
+        use_flow_for_merge = (
+            optical_flow_method != "none"
+            and _HAS_NUMPY
+        )
+        if use_flow_for_merge:
+            best_track_obs = {
+                o["frame_id"]: o for o in tracks[track_scores[0][0]]
+            }
+            print(f"  Building preliminary OF trace from best track "
+                  f"({track_scores[0][0]}, {len(best_track_obs)} detections)…")
+            preliminary_of_trace = _maintain_of_trace(
+                best_track_obs, n_frames, img_w, img_h,
+                frame_dir, seg_frames,
+                method=optical_flow_method,
+                min_keypoints=flow_min_keypoints,
+                reanchor_interval=identity_guard_reanchor_interval,
+                reanchor_min_conf=identity_guard_reanchor_min_conf,
+                max_drift_px=identity_guard_max_drift_px,
+            )
+            print(f"  → Preliminary OF trace: {len(preliminary_of_trace)} frames")
+
         selected_obs = _resolve_merge_conflicts(
             frame_candidates, cx, cy, max_dist, w_conf, w_center,
             frame_dir=frame_dir,
             seg_frames=seg_frames,
             optical_flow_method=optical_flow_method,
             flow_min_keypoints=flow_min_keypoints,
-            of_trace=None,  # OF trace not available during merge phase
+            of_trace=preliminary_of_trace or None,
         )
 
         # Store metadata for manifest (use top track as representative)
@@ -301,12 +340,20 @@ def track_skier(
     if use_flow:
         print(f"  Optical flow: {optical_flow_method} "
               f"(min_kp={flow_min_keypoints}, max_extrap={flow_max_extrapolate_frames})")
+        if cmc_enabled:
+            print(f"  Camera motion compensation: enabled (method={cmc_method}, "
+                  f"min_features={cmc_min_features})")
         flow_velocities, of_method_used = _fill_gaps_optical_flow(
             frame_bboxes, n_frames, img_w, img_h,
             frame_dir, seg_frames,
             method=optical_flow_method,
             min_keypoints=flow_min_keypoints,
             max_extrapolate=flow_max_extrapolate_frames,
+            cmc_enabled=cmc_enabled,
+            cmc_method=cmc_method,
+            cmc_exclude_margin=cmc_exclude_margin,
+            cmc_min_features=cmc_min_features,
+            cmc_ransac_threshold=cmc_ransac_threshold,
         )
     else:
         if optical_flow_method != "none":
@@ -441,7 +488,8 @@ def _resolve_merge_conflicts(
     *,
     w_continuity: float = 0.6,
     w_track_stickiness: float = 0.4,
-    w_of_agreement: float = 0.5,
+    w_of_agreement: float = 1.5,
+    of_tight_radius_px: float = 150.0,
     frame_dir: Path | None = None,
     seg_frames: list[dict] | None = None,
     optical_flow_method: str = "auto",
@@ -562,7 +610,8 @@ def _resolve_merge_conflicts(
                         (det_cx - predicted_cx) ** 2
                         + (det_cy - predicted_cy) ** 2
                     )
-                    continuity = max(0.0, 1.0 - dist / max_dist)
+                    # Use tight radius for sharp penalty on large jumps
+                    continuity = max(0.0, 1.0 - dist / of_tight_radius_px)
                 else:
                     continuity = 0.5  # neutral when no history
 
@@ -577,6 +626,8 @@ def _resolve_merge_conflicts(
                 )
 
                 # OF agreement — distance to OF trace prediction
+                # Uses a TIGHT radius (150px) instead of image diagonal
+                # so the signal sharply penalises candidates far from OF.
                 of_agreement = 0.0
                 if of_pred_cx is not None and of_pred_cy is not None:
                     det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
@@ -585,13 +636,28 @@ def _resolve_merge_conflicts(
                         (det_cx - of_pred_cx) ** 2
                         + (det_cy - of_pred_cy) ** 2
                     )
-                    of_agreement = max(0.0, 1.0 - dist / max_dist)
+                    of_agreement = max(0.0, 1.0 - dist / of_tight_radius_px)
+
+                # Adaptive OF weight: boost when candidates are spread
+                # far apart (genuine conflict) vs clustered (minor jitter).
+                effective_of_weight = w_of_agreement
+                if of_pred_cx is not None and len(candidates) > 1:
+                    # Measure spread of candidates
+                    cxs = [(d["bbox"][0] + d["bbox"][2]) / 2 for d in candidates]
+                    cys = [(d["bbox"][1] + d["bbox"][3]) / 2 for d in candidates]
+                    spread = max(
+                        max(cxs) - min(cxs),
+                        max(cys) - min(cys),
+                    )
+                    if spread > 100.0:
+                        # Large spread → strong conflict → trust OF more
+                        effective_of_weight = w_of_agreement * 2.0
 
                 combined = (
                     quality
                     + w_continuity * continuity
                     + w_track_stickiness * stickiness
-                    + w_of_agreement * of_agreement
+                    + effective_of_weight * of_agreement
                 )
                 if combined > best_score:
                     best_score = combined
@@ -705,12 +771,158 @@ _FARNEBACK_PARAMS: dict = dict(
 )
 
 
+def _compute_camera_motion(
+    img_prev: "np.ndarray",
+    img_next: "np.ndarray",
+    exclude_bbox: list[int] | None = None,
+    exclude_margin: float = 1.5,
+    method: str = "orb",
+    min_features: int = 20,
+    ransac_threshold: float = 3.0,
+) -> tuple[float, float, float, str]:
+    """Estimate global camera motion between two frames.
+
+    Uses feature matching on background regions (excluding the skier ROI)
+    to compute a homography representing camera pan, tilt, and rotation.
+    This enables separating camera motion from object motion in optical flow.
+
+    Parameters
+    ----------
+    img_prev : previous frame (grayscale or BGR).
+    img_next : next frame (grayscale or BGR).
+    exclude_bbox : bounding box ``[x1, y1, x2, y2]`` to exclude from feature
+        detection (typically the skier). If None, uses full frame.
+    exclude_margin : multiplier for exclusion zone (1.5 = 1.5× bbox area).
+    method : ``"orb"`` | ``"ecc"`` | ``"none"``. ORB is fastest and recommended.
+    min_features : minimum matched features required for valid homography.
+    ransac_threshold : pixel threshold for RANSAC outlier rejection.
+
+    Returns
+    -------
+    ``(dx, dy, d_theta, method_used)`` — camera translation (pixels) and
+    rotation (radians), plus method that succeeded. Returns (0, 0, 0, "none")
+    if estimation fails.
+    """
+    if not _HAS_NUMPY:
+        return 0.0, 0.0, 0.0, "none"
+
+    if method == "none":
+        return 0.0, 0.0, 0.0, "none"
+
+    # Convert to grayscale if needed
+    if len(img_prev.shape) == 3:
+        gray_prev = cv2.cvtColor(img_prev, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_prev = img_prev
+    if len(img_next.shape) == 3:
+        gray_next = cv2.cvtColor(img_next, cv2.COLOR_BGR2GRAY)
+    else:
+        gray_next = img_next
+
+    h, w = gray_prev.shape
+
+    # Create mask to exclude skier region from feature detection
+    mask = None
+    if exclude_bbox is not None:
+        x1, y1, x2, y2 = exclude_bbox
+        bw, bh = x2 - x1, y2 - y1
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+
+        # Expand exclusion zone
+        ex_w = int(bw * exclude_margin)
+        ex_h = int(bh * exclude_margin)
+        ex_x1 = max(0, cx - ex_w // 2)
+        ex_y1 = max(0, cy - ex_h // 2)
+        ex_x2 = min(w, cx + ex_w // 2)
+        ex_y2 = min(h, cy + ex_h // 2)
+
+        # Create mask (255 = search region, 0 = excluded)
+        mask = np.ones((h, w), dtype=np.uint8) * 255
+        mask[ex_y1:ex_y2, ex_x1:ex_x2] = 0
+
+    # --- ORB Feature Matching ---
+    if method == "orb":
+        try:
+            # Detect and compute ORB features
+            orb = cv2.ORB_create(nfeatures=500)
+            kp1, des1 = orb.detectAndCompute(gray_prev, mask)
+            kp2, des2 = orb.detectAndCompute(gray_next, mask)
+
+            if des1 is None or des2 is None or len(kp1) < min_features or len(kp2) < min_features:
+                return 0.0, 0.0, 0.0, "none"
+
+            # Match features using Hamming distance (ORB is binary descriptor)
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matches = bf.match(des1, des2)
+
+            if len(matches) < min_features:
+                return 0.0, 0.0, 0.0, "none"
+
+            # Extract matched point coordinates
+            pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+            pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+
+            # Estimate homography with RANSAC
+            H, inliers = cv2.findHomography(pts1, pts2, cv2.RANSAC, ransac_threshold)
+
+            if H is None or inliers is None or np.sum(inliers) < min_features:
+                return 0.0, 0.0, 0.0, "none"
+
+            # Extract translation from homography
+            dx = float(H[0, 2])
+            dy = float(H[1, 2])
+
+            # Extract rotation (approximate from rotation component)
+            # For small rotations: theta ≈ atan2(H[1,0], H[0,0])
+            d_theta = float(np.arctan2(H[1, 0], H[0, 0]))
+
+            return dx, dy, d_theta, "orb"
+
+        except Exception:
+            return 0.0, 0.0, 0.0, "none"
+
+    # --- ECC (Enhanced Correlation Coefficient) ---
+    elif method == "ecc":
+        try:
+            # ECC requires good initialization
+            warp_matrix = np.eye(2, 3, dtype=np.float32)
+            criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.001)
+
+            # Apply mask by zeroing excluded regions (ECC doesn't support mask directly)
+            if mask is not None:
+                gray_prev_masked = gray_prev.copy()
+                gray_next_masked = gray_next.copy()
+                gray_prev_masked[mask == 0] = 0
+                gray_next_masked[mask == 0] = 0
+            else:
+                gray_prev_masked = gray_prev
+                gray_next_masked = gray_next
+
+            # Compute affine transform
+            _, warp_matrix = cv2.findTransformECC(
+                gray_prev_masked, gray_next_masked, warp_matrix,
+                cv2.MOTION_EUCLIDEAN, criteria
+            )
+
+            dx = float(warp_matrix[0, 2])
+            dy = float(warp_matrix[1, 2])
+            d_theta = float(np.arctan2(warp_matrix[1, 0], warp_matrix[0, 0]))
+
+            return dx, dy, d_theta, "ecc"
+
+        except Exception:
+            return 0.0, 0.0, 0.0, "none"
+
+    return 0.0, 0.0, 0.0, "none"
+
+
 def _compute_flow_displacement(
     img_prev: "np.ndarray",
     img_next: "np.ndarray",
     bbox: list[int],
     method: str = "auto",
     min_keypoints: int = 5,
+    camera_motion: tuple[float, float, float] | None = None,
 ) -> tuple[float, float, str]:
     """Compute bbox displacement between two frames via optical flow.
 
@@ -721,11 +933,14 @@ def _compute_flow_displacement(
     bbox : reference bounding box ``[x1, y1, x2, y2]`` in ``img_prev``.
     method : ``"auto"`` | ``"sparse"`` | ``"dense"``.
     min_keypoints : sparse→dense fallback threshold (for ``"auto"``).
+    camera_motion : optional ``(dx_cam, dy_cam, d_theta_cam)`` to subtract
+        from measured flow to isolate object motion.
 
     Returns
     -------
     ``(dx, dy, method_used)`` — pixel displacement of the bbox centre
-    between the two frames and the method that produced the result.
+    between the two frames (with camera motion compensation if provided)
+    and the method that produced the result.
     """
     x1, y1, x2, y2 = bbox
     bw, bh = x2 - x1, y2 - y1
@@ -778,6 +993,13 @@ def _compute_flow_displacement(
                 if mask_inlier.sum() >= 2:
                     dx = float(np.median(displacements[mask_inlier, 0]))
                     dy = float(np.median(displacements[mask_inlier, 1]))
+
+                    # Subtract camera motion if provided
+                    if camera_motion is not None:
+                        dx_cam, dy_cam, _ = camera_motion
+                        dx -= dx_cam
+                        dy -= dy_cam
+
                     return dx, dy, "sparse"
 
         # Not enough keypoints — try dense if auto
@@ -808,6 +1030,13 @@ def _compute_flow_displacement(
 
         dx = float(np.mean(bbox_flow[..., 0]))
         dy = float(np.mean(bbox_flow[..., 1]))
+
+        # Subtract camera motion if provided
+        if camera_motion is not None:
+            dx_cam, dy_cam, _ = camera_motion
+            dx -= dx_cam
+            dy -= dy_cam
+
         used = "dense"
         return dx, dy, used
 
@@ -846,6 +1075,11 @@ def _fill_gaps_optical_flow(
     method: str = "auto",
     min_keypoints: int = 5,
     max_extrapolate: int = 30,
+    cmc_enabled: bool = True,
+    cmc_method: str = "orb",
+    cmc_exclude_margin: float = 1.5,
+    cmc_min_features: int = 20,
+    cmc_ransac_threshold: float = 3.0,
 ) -> tuple[dict[int, tuple[float, float]], str]:
     """Fill detection gaps using optical flow (in-place).
 
@@ -865,6 +1099,11 @@ def _fill_gaps_optical_flow(
     method : optical flow method.
     min_keypoints : sparse→dense fallback threshold.
     max_extrapolate : maximum frames to propagate for leading/trailing gaps.
+    cmc_enabled : enable camera motion compensation if True.
+    cmc_method : camera motion method ("orb" | "ecc" | "none").
+    cmc_exclude_margin : exclusion margin multiplier for skier bbox.
+    cmc_min_features : minimum matches for valid camera motion estimate.
+    cmc_ransac_threshold : RANSAC outlier threshold for homography.
 
     Returns
     -------
@@ -896,6 +1135,33 @@ def _fill_gaps_optical_flow(
             return img
         return None
 
+    # --- Camera motion cache (computed on-demand per frame pair) ---
+    camera_motion: dict[int, tuple[float, float, float]] = {}
+
+    def _get_camera_motion(
+        fid_prev: int,
+        fid_next: int,
+        exclude_bbox: list[int] | None,
+    ) -> tuple[float, float, float] | None:
+        if not cmc_enabled or cmc_method == "none":
+            return None
+        if fid_prev in camera_motion:
+            return camera_motion[fid_prev]
+        img_prev = _get_frame_img(fid_prev)
+        img_next = _get_frame_img(fid_next)
+        if img_prev is None or img_next is None:
+            return None
+        dx_cam, dy_cam, d_theta, _ = _compute_camera_motion(
+            img_prev, img_next,
+            exclude_bbox=exclude_bbox,
+            exclude_margin=cmc_exclude_margin,
+            method=cmc_method,
+            min_features=cmc_min_features,
+            ransac_threshold=cmc_ransac_threshold,
+        )
+        camera_motion[fid_prev] = (dx_cam, dy_cam, d_theta)
+        return camera_motion[fid_prev]
+
     # --- Leading gap (before first detection) ---
     first = detected_ids[0]
     if first > 0:
@@ -911,6 +1177,7 @@ def _fill_gaps_optical_flow(
                 dx, dy, m = _compute_flow_displacement(
                     img_a, img_b, cur_bbox, method=method,
                     min_keypoints=min_keypoints,
+                    camera_motion=_get_camera_motion(first - step + 1, fid, cur_bbox),
                 )
                 if m != "none":
                     methods_used.add(m)
@@ -955,6 +1222,7 @@ def _fill_gaps_optical_flow(
                 dx, dy, m = _compute_flow_displacement(
                     img_prev, img_cur, cur, method=method,
                     min_keypoints=min_keypoints,
+                    camera_motion=_get_camera_motion(fid - 1, fid, cur),
                 )
                 if m != "none":
                     methods_used.add(m)
@@ -973,6 +1241,7 @@ def _fill_gaps_optical_flow(
                 dx, dy, m = _compute_flow_displacement(
                     img_next, img_cur, cur, method=method,
                     min_keypoints=min_keypoints,
+                    camera_motion=_get_camera_motion(fid + 1, fid, cur),
                 )
                 if m != "none":
                     methods_used.add(m)
@@ -1023,6 +1292,7 @@ def _fill_gaps_optical_flow(
                 dx, dy, m = _compute_flow_displacement(
                     img_a, img_b, cur_bbox, method=method,
                     min_keypoints=min_keypoints,
+                    camera_motion=_get_camera_motion(fid - 1, fid, cur_bbox),
                 )
                 if m != "none":
                     methods_used.add(m)
@@ -1329,117 +1599,173 @@ def _smooth_bboxes_velocity_aware(
     window: int,
     flow_velocities: dict[int, tuple[float, float]],
 ) -> None:
-    """Smooth bboxes using a velocity-aware bidirectional filter (in-place).
+    """Smooth bboxes using a Kalman filter with constant acceleration model.
 
-    Uses per-frame optical-flow velocities as a motion prior.  Detected
-    frames are trusted more (low measurement noise) while interpolated
-    frames weight the motion prediction more heavily.
+    Uses a proper Kalman filter (forward pass) + Rauch-Tung-Striebel (RTS)
+    backward smoother for optimal trajectory estimation.  The constant
+    acceleration motion model better captures skiing physics: gravity-driven
+    speed changes, jumps, and terrain transitions.
+
+    Optical-flow velocities are injected as velocity measurements alongside
+    bounding-box position/size measurements.  Detected frames receive lower
+    measurement noise (higher trust) than interpolated frames.
 
     Parameters
     ----------
     frame_bboxes : per-frame bbox dict (modified in-place).
     n_frames : total number of frames.
-    window : smoothing window; maps to noise ratio.
+    window : smoothing window; maps to noise scaling.
     flow_velocities : per-frame ``(dx, dy)`` from optical flow.
     """
-    alpha = 2.0 / (window + 1)
-    # Detected frames get higher measurement trust
-    alpha_det = min(1.0, alpha * 2.0)
-    alpha_interp = alpha * 0.5
+    import numpy as np
 
     sorted_ids = sorted(frame_bboxes.keys())
     if len(sorted_ids) < 2:
         return
 
-    def _get_alpha(fid: int) -> float:
-        return alpha_det if frame_bboxes[fid].get("detected", False) else alpha_interp
+    dt = 1.0  # normalised frame interval
 
-    # Forward pass — state is [cx, cy, w, h] with velocity prediction
+    # --- State: [cx, cy, vx, vy, ax, ay, w, h] --------------------------
+    NS = 8  # state dimension
+    NM = 4  # position+size measurement dimension
+
+    # State transition matrix (constant acceleration)
+    F = np.eye(NS)
+    F[0, 2] = dt                # cx += vx·dt
+    F[1, 3] = dt                # cy += vy·dt
+    F[0, 4] = 0.5 * dt * dt    # cx += ½·ax·dt²
+    F[1, 5] = 0.5 * dt * dt    # cy += ½·ay·dt²
+    F[2, 4] = dt                # vx += ax·dt
+    F[3, 5] = dt                # vy += ay·dt
+
+    # Measurement matrix: observe [cx, cy, w, h]
+    H = np.zeros((NM, NS))
+    H[0, 0] = 1.0  # cx
+    H[1, 1] = 1.0  # cy
+    H[2, 6] = 1.0  # w
+    H[3, 7] = 1.0  # h
+
+    # Process noise — tuned via window parameter
+    scale = max(1.0, float(window))
+    Q = np.diag([
+        1.0 * scale,   # cx
+        1.0 * scale,   # cy
+        4.0 * scale,   # vx
+        4.0 * scale,   # vy
+        8.0 * scale,   # ax  — acceleration most uncertain
+        8.0 * scale,   # ay
+        0.5 * scale,   # w   — size changes slowly
+        0.5 * scale,   # h
+    ])
+
+    # Measurement noise — detected vs interpolated
+    r_det_pos = 4.0            # position noise for detected frames
+    r_interp_pos = 40.0        # position noise for interpolated frames
+    r_size = 8.0               # size noise (always moderate)
+    R_det = np.diag([r_det_pos, r_det_pos, r_size, r_size])
+    R_interp = np.diag([r_interp_pos, r_interp_pos, r_size * 2, r_size * 2])
+
+    # OF velocity measurement: H_v maps state to [vx, vy]
+    H_v = np.zeros((2, NS))
+    H_v[0, 2] = 1.0  # vx
+    H_v[1, 3] = 1.0  # vy
+    R_v = np.diag([10.0, 10.0])  # OF velocity noise
+
+    # --- Initialise state from first frame --------------------------------
     fb0 = frame_bboxes[sorted_ids[0]]["bbox"]
-    state_fwd = [
-        (fb0[0] + fb0[2]) / 2.0,  # cx
-        (fb0[1] + fb0[3]) / 2.0,  # cy
-        float(fb0[2] - fb0[0]),     # w
-        float(fb0[3] - fb0[1]),     # h
-    ]
-    smoothed_fwd: dict[int, list[float]] = {sorted_ids[0]: list(state_fwd)}
+    cx0 = (fb0[0] + fb0[2]) / 2.0
+    cy0 = (fb0[1] + fb0[3]) / 2.0
+    w0 = float(fb0[2] - fb0[0])
+    h0 = float(fb0[3] - fb0[1])
+    vx0, vy0 = flow_velocities.get(sorted_ids[0], (0.0, 0.0))
 
-    for i in range(1, len(sorted_ids)):
-        fid = sorted_ids[i]
+    x = np.array([cx0, cy0, vx0, vy0, 0.0, 0.0, w0, h0])
+    P = np.diag([5.0, 5.0, 25.0, 25.0, 100.0, 100.0, 10.0, 10.0])
 
+    I_ns = np.eye(NS)
+
+    # Storage for RTS smoother
+    x_fwd: list[np.ndarray] = []
+    P_fwd: list[np.ndarray] = []
+    x_pred_store: list[np.ndarray] = []
+    P_pred_store: list[np.ndarray] = []
+
+    # --- Forward Kalman filter --------------------------------------------
+    for i, fid in enumerate(sorted_ids):
+        if i == 0:
+            x_fwd.append(x.copy())
+            P_fwd.append(P.copy())
+            x_pred_store.append(x.copy())
+            P_pred_store.append(P.copy())
+            continue
+
+        # Predict
+        x_pred = F @ x
+        P_pred = F @ P @ F.T + Q
+
+        # Clamp acceleration to physical limits (~2g ≈ 20 m/s² ≈ ~40px/frame²)
+        max_acc = 40.0
+        x_pred[4] = float(np.clip(x_pred[4], -max_acc, max_acc))
+        x_pred[5] = float(np.clip(x_pred[5], -max_acc, max_acc))
+
+        x_pred_store.append(x_pred.copy())
+        P_pred_store.append(P_pred.copy())
+
+        # --- Measurement update (position + size) -------------------------
         raw = frame_bboxes[fid]["bbox"]
-        raw_cx = (raw[0] + raw[2]) / 2.0
-        raw_cy = (raw[1] + raw[3]) / 2.0
-        raw_w = float(raw[2] - raw[0])
-        raw_h = float(raw[3] - raw[1])
-        measurement = [raw_cx, raw_cy, raw_w, raw_h]
+        z = np.array([
+            (raw[0] + raw[2]) / 2.0,
+            (raw[1] + raw[3]) / 2.0,
+            float(raw[2] - raw[0]),
+            float(raw[3] - raw[1]),
+        ])
 
-        # Motion prediction from flow velocity
-        vx, vy = flow_velocities.get(fid, (0.0, 0.0))
-        prediction = [
-            state_fwd[0] + vx,
-            state_fwd[1] + vy,
-            state_fwd[2],  # width assumed stable
-            state_fwd[3],  # height assumed stable
-        ]
+        is_det = frame_bboxes[fid].get("detected", False)
+        R_cur = R_det if is_det else R_interp
 
-        a = _get_alpha(fid)
-        state_fwd = [
-            a * measurement[j] + (1.0 - a) * prediction[j]
-            for j in range(4)
-        ]
-        smoothed_fwd[fid] = list(state_fwd)
+        y = z - H @ x_pred
+        S = H @ P_pred @ H.T + R_cur
+        K = P_pred @ H.T @ np.linalg.inv(S)
+        x = x_pred + K @ y
+        P = (I_ns - K @ H) @ P_pred
 
-    # Backward pass
-    fb_last = frame_bboxes[sorted_ids[-1]]["bbox"]
-    state_bwd = [
-        (fb_last[0] + fb_last[2]) / 2.0,
-        (fb_last[1] + fb_last[3]) / 2.0,
-        float(fb_last[2] - fb_last[0]),
-        float(fb_last[3] - fb_last[1]),
-    ]
-    smoothed_bwd: dict[int, list[float]] = {sorted_ids[-1]: list(state_bwd)}
+        # --- Optional velocity update from OF -----------------------------
+        vx_of, vy_of = flow_velocities.get(fid, (0.0, 0.0))
+        if abs(vx_of) > 0.01 or abs(vy_of) > 0.01:
+            z_v = np.array([vx_of, vy_of])
+            y_v = z_v - H_v @ x
+            S_v = H_v @ P @ H_v.T + R_v
+            K_v = P @ H_v.T @ np.linalg.inv(S_v)
+            x = x + K_v @ y_v
+            P = (I_ns - K_v @ H_v) @ P
 
-    for i in range(len(sorted_ids) - 2, -1, -1):
-        fid = sorted_ids[i]
-        next_fid = sorted_ids[i + 1]
+        x_fwd.append(x.copy())
+        P_fwd.append(P.copy())
 
-        raw = frame_bboxes[fid]["bbox"]
-        raw_cx = (raw[0] + raw[2]) / 2.0
-        raw_cy = (raw[1] + raw[3]) / 2.0
-        raw_w = float(raw[2] - raw[0])
-        raw_h = float(raw[3] - raw[1])
-        measurement = [raw_cx, raw_cy, raw_w, raw_h]
+    # --- RTS backward smoother --------------------------------------------
+    n = len(sorted_ids)
+    x_smooth: list[np.ndarray] = [np.zeros(NS)] * n
+    x_smooth[-1] = x_fwd[-1].copy()
 
-        # Reverse velocity from the next frame's flow
-        vx, vy = flow_velocities.get(next_fid, (0.0, 0.0))
-        prediction = [
-            state_bwd[0] - vx,
-            state_bwd[1] - vy,
-            state_bwd[2],
-            state_bwd[3],
-        ]
+    for i in range(n - 2, -1, -1):
+        P_pred = P_pred_store[i + 1]
+        try:
+            G = P_fwd[i] @ F.T @ np.linalg.inv(P_pred)
+        except np.linalg.LinAlgError:
+            G = np.zeros((NS, NS))
+        x_smooth[i] = x_fwd[i] + G @ (x_smooth[i + 1] - x_pred_store[i + 1])
 
-        a = _get_alpha(fid)
-        state_bwd = [
-            a * measurement[j] + (1.0 - a) * prediction[j]
-            for j in range(4)
-        ]
-        smoothed_bwd[fid] = list(state_bwd)
-
-    # Merge forward + backward → convert (cx, cy, w, h) back to [x1, y1, x2, y2]
-    for fid in sorted_ids:
-        fwd = smoothed_fwd[fid]
-        bwd = smoothed_bwd[fid]
-        cx = (fwd[0] + bwd[0]) / 2.0
-        cy = (fwd[1] + bwd[1]) / 2.0
-        w = (fwd[2] + bwd[2]) / 2.0
-        h = (fwd[3] + bwd[3]) / 2.0
+    # --- Write smoothed bboxes back ---------------------------------------
+    for i, fid in enumerate(sorted_ids):
+        s = x_smooth[i]
+        cx_s, cy_s = s[0], s[1]
+        w_s = max(10.0, s[6])
+        h_s = max(10.0, s[7])
         frame_bboxes[fid]["bbox"] = [
-            int(round(cx - w / 2.0)),
-            int(round(cy - h / 2.0)),
-            int(round(cx + w / 2.0)),
-            int(round(cy + h / 2.0)),
+            int(round(cx_s - w_s / 2.0)),
+            int(round(cy_s - h_s / 2.0)),
+            int(round(cx_s + w_s / 2.0)),
+            int(round(cy_s + h_s / 2.0)),
         ]
 
 
