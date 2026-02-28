@@ -20,6 +20,7 @@ the project convention of one public function per module returning a Path.
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 from pathlib import Path
@@ -59,6 +60,9 @@ def track_skier(
     identity_guard_reanchor_interval: int = 50,
     identity_guard_reanchor_min_conf: float = 0.5,
     identity_guard_max_drift_px: float = 200.0,
+    w_velocity: float = 0.4,
+    vel_history_len: int = 5,
+    of_synthetic_confidence: float = 0.3,
     cmc_enabled: bool = True,
     cmc_method: str = "orb",
     cmc_exclude_margin: float = 1.5,
@@ -262,6 +266,9 @@ def track_skier(
 
         selected_obs = _resolve_merge_conflicts(
             frame_candidates, cx, cy, max_dist, w_conf, w_center,
+            w_velocity=w_velocity,
+            vel_history_len=vel_history_len,
+            of_synthetic_confidence=of_synthetic_confidence,
             frame_dir=frame_dir,
             seg_frames=seg_frames,
             optical_flow_method=optical_flow_method,
@@ -325,11 +332,13 @@ def track_skier(
     for fid in range(n_frames):
         if fid in selected_obs:
             o = selected_obs[fid]
+            is_synthetic = o.get("of_synthetic", False)
             frame_bboxes[fid] = {
                 "bbox": o["bbox"],
                 "confidence": o["confidence"],
-                "detected": True,
-                "interpolated": False,
+                "detected": not is_synthetic,
+                "interpolated": is_synthetic,
+                "of_synthetic": is_synthetic,
                 "of_predicted": of_trace.get(fid),
             }
 
@@ -369,9 +378,10 @@ def track_skier(
     # ------------------------------------------------------------------
     # Phase C — Temporal bbox smoothing
     # ------------------------------------------------------------------
+    smoothed_velocities: dict[int, tuple[float, float]] = {}
     if smooth_window > 0 and len(frame_bboxes) > 1:
         if use_flow and flow_velocities:
-            _smooth_bboxes_velocity_aware(
+            smoothed_velocities = _smooth_bboxes_velocity_aware(
                 frame_bboxes, n_frames, smooth_window, flow_velocities,
             )
         else:
@@ -408,6 +418,7 @@ def track_skier(
             "frame_file": frame_file,
             "detected": fb["detected"],
             "interpolated": fb["interpolated"],
+            "of_synthetic": fb.get("of_synthetic", False),
             "bbox": [x1, y1, x2, y2],
             "bbox_padded": [px1, py1, px2, py2],
             "confidence": fb["confidence"],
@@ -422,7 +433,33 @@ def track_skier(
                 [round(fb["of_predicted"][0], 2), round(fb["of_predicted"][1], 2)]
                 if fb.get("of_predicted") is not None else None
             ),
+            "velocity": (
+                [round(smoothed_velocities[idx][0], 2),
+                 round(smoothed_velocities[idx][1], 2)]
+                if idx in smoothed_velocities else None
+            ),
+            "speed_px_per_frame": (
+                round(math.sqrt(
+                    smoothed_velocities[idx][0] ** 2
+                    + smoothed_velocities[idx][1] ** 2
+                ), 2)
+                if idx in smoothed_velocities else None
+            ),
         })
+
+    # Compute velocity summary stats
+    velocity_stats: dict[str, float] | None = None
+    if smoothed_velocities:
+        speeds = [
+            math.sqrt(vx ** 2 + vy ** 2)
+            for vx, vy in smoothed_velocities.values()
+        ]
+        vys = [vy for _, vy in smoothed_velocities.values()]
+        velocity_stats = {
+            "mean_speed": round(sum(speeds) / len(speeds), 2),
+            "max_speed": round(max(speeds), 2),
+            "mean_vy": round(sum(vys) / len(vys), 2),
+        }
 
     # Write manifest
     manifest = {
@@ -436,6 +473,7 @@ def track_skier(
         "optical_flow_method_used": of_method_used if use_flow else "none",
         "identity_guard_enabled": identity_guard_enabled,
         "identity_guard_rejections": identity_rejections,
+        "velocity_stats": velocity_stats,
         "n_frames": n_frames,
         "frames": manifest_frames,
     }
@@ -455,6 +493,64 @@ def track_skier(
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _velocity_consistency(
+    vel_history: "collections.deque[tuple[float, float]]",
+    candidate_vx: float,
+    candidate_vy: float,
+    min_history: int = 3,
+) -> float:
+    """Score how well a candidate's implied velocity matches recent motion.
+
+    Combines direction similarity (cosine) and magnitude consistency to
+    distinguish the moving athlete from stationary bystanders or people
+    moving in a different direction.
+
+    Parameters
+    ----------
+    vel_history : recent ``(vx, vy)`` tuples from chosen detections.
+    candidate_vx, candidate_vy : implied velocity of the candidate.
+    min_history : minimum entries before scoring is active.
+
+    Returns
+    -------
+    Score in ``[0, 1]``.  Returns 0.5 (neutral) during cold start.
+    """
+    if len(vel_history) < min_history:
+        return 0.5
+
+    # Weighted mean of recent velocities (more recent = higher weight)
+    weights = [i + 1 for i in range(len(vel_history))]
+    w_sum = sum(weights)
+    pred_vx = sum(w * v[0] for w, v in zip(weights, vel_history)) / w_sum
+    pred_vy = sum(w * v[1] for w, v in zip(weights, vel_history)) / w_sum
+
+    pred_mag = math.sqrt(pred_vx ** 2 + pred_vy ** 2)
+    cand_mag = math.sqrt(candidate_vx ** 2 + candidate_vy ** 2)
+
+    # --- Direction similarity (cosine) ---
+    eps = 1e-6
+    if pred_mag < eps or cand_mag < eps:
+        # One or both are near-stationary — direction undefined
+        # If predicted is moving but candidate is stationary, penalise
+        if pred_mag > 2.0 and cand_mag < 1.0:
+            direction_sim = 0.0
+        else:
+            direction_sim = 0.5
+    else:
+        dot = pred_vx * candidate_vx + pred_vy * candidate_vy
+        cosine = dot / (pred_mag * cand_mag)
+        direction_sim = max(0.0, (cosine + 1.0) / 2.0)  # map [-1, 1] → [0, 1]
+
+    # --- Magnitude consistency ---
+    if pred_mag < eps:
+        magnitude_sim = 1.0 if cand_mag < 2.0 else max(0.0, 1.0 - cand_mag / 50.0)
+    else:
+        ratio = abs(cand_mag - pred_mag) / (pred_mag + eps)
+        magnitude_sim = max(0.0, 1.0 - ratio)
+
+    return 0.65 * direction_sim + 0.35 * magnitude_sim
+
 
 def _score_detection(
     detection: dict,
@@ -491,7 +587,10 @@ def _resolve_merge_conflicts(
     w_continuity: float = 0.6,
     w_track_stickiness: float = 0.4,
     w_of_agreement: float = 1.5,
+    w_velocity: float = 0.4,
+    vel_history_len: int = 5,
     of_tight_radius_px: float = 150.0,
+    of_synthetic_confidence: float = 0.3,
     frame_dir: Path | None = None,
     seg_frames: list[dict] | None = None,
     optical_flow_method: str = "auto",
@@ -513,6 +612,14 @@ def _resolve_merge_conflicts(
        during crossover events.
     4. **OF agreement** — bonus for proximity to the OF-predicted position
        from the independent OF trace (when provided).
+    5. **Velocity consistency** — bonus for candidates whose implied
+       velocity (direction + magnitude) matches recent motion history.
+       Distinguishes the moving athlete from stationary bystanders.
+    6. **Synthetic OF candidate** — when no YOLO detection is near the
+       OF-predicted position, a synthetic candidate is injected at the
+       OF center using the previous bbox size.  This preserves tracking
+       through aerial phases where the skier is undetected by YOLO but
+       bystanders are.
 
     Parameters
     ----------
@@ -524,6 +631,10 @@ def _resolve_merge_conflicts(
     w_continuity : weight for the spatial-continuity term.
     w_track_stickiness : bonus for same ByteTrack ``track_id``.
     w_of_agreement : weight for OF trace agreement (when of_trace is provided).
+    w_velocity : weight for velocity-consistency term.
+    vel_history_len : number of recent velocities to maintain.
+    of_tight_radius_px : normalisation radius for distance→score conversion.
+    of_synthetic_confidence : confidence assigned to synthetic OF candidates.
     frame_dir : directory containing extracted frames (needed for OF).
     seg_frames : segmentation frame list (maps frame_id → frame_file).
     optical_flow_method : ``"auto"`` | ``"sparse"`` | ``"dense"`` | ``"none"``.
@@ -569,6 +680,9 @@ def _resolve_merge_conflicts(
         p_bbox: list[int] | None = None
         p_fid: int | None = None
         p_track_id: int | None = None
+        vel_history: collections.deque[tuple[float, float]] = collections.deque(
+            maxlen=vel_history_len,
+        )
 
         for fid in fid_order:
             candidates = frame_candidates[fid]
@@ -589,9 +703,35 @@ def _resolve_merge_conflicts(
                 # Only replace if we still have at least 1 candidate
                 if near_of:
                     candidates = near_of
+                else:
+                    # No real detection within 2×radius of OF — inject a
+                    # synthetic OF candidate so the tracker doesn't default
+                    # to a distant bystander.
+                    if p_bbox is not None and of_synthetic_confidence > 0:
+                        p_w = p_bbox[2] - p_bbox[0]
+                        p_h = p_bbox[3] - p_bbox[1]
+                        syn_x1 = int(round(of_cx - p_w / 2))
+                        syn_y1 = int(round(of_cy - p_h / 2))
+                        syn_x2 = syn_x1 + p_w
+                        syn_y2 = syn_y1 + p_h
+                        synthetic = {
+                            "bbox": [syn_x1, syn_y1, syn_x2, syn_y2],
+                            "confidence": of_synthetic_confidence,
+                            "area": p_w * p_h,
+                            "track_id": None,
+                            "of_synthetic": True,
+                        }
+                        candidates = candidates + [synthetic]
 
             if len(candidates) == 1:
                 pass_result[fid] = candidates[0]
+                # Update velocity history from single candidate
+                if p_bbox is not None:
+                    det_cx = (candidates[0]["bbox"][0] + candidates[0]["bbox"][2]) / 2
+                    det_cy = (candidates[0]["bbox"][1] + candidates[0]["bbox"][3]) / 2
+                    prev_cx = (p_bbox[0] + p_bbox[2]) / 2
+                    prev_cy = (p_bbox[1] + p_bbox[3]) / 2
+                    vel_history.append((det_cx - prev_cx, det_cy - prev_cy))
                 p_bbox = candidates[0]["bbox"]
                 p_track_id = candidates[0].get("track_id")
                 p_fid = fid
@@ -659,7 +799,12 @@ def _resolve_merge_conflicts(
 
                     # OF agreement
                     of_agreement = 0.0
-                    if of_pred_cx is not None and of_pred_cy is not None:
+                    if det.get("of_synthetic"):
+                        # Synthetic candidates are placed AT the OF
+                        # prediction, so OF agreement is tautologically 1.0.
+                        # Zero it out to avoid circular self-reinforcement.
+                        of_agreement = 0.0
+                    elif of_pred_cx is not None and of_pred_cy is not None:
                         det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
                         det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
                         dist = math.sqrt(
@@ -667,6 +812,19 @@ def _resolve_merge_conflicts(
                             + (det_cy - of_pred_cy) ** 2
                         )
                         of_agreement = max(0.0, 1.0 - dist / of_tight_radius_px)
+
+                    # Velocity consistency
+                    vel_score = 0.5  # neutral default
+                    if p_bbox is not None:
+                        det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
+                        det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
+                        p_cx = (p_bbox[0] + p_bbox[2]) / 2
+                        p_cy = (p_bbox[1] + p_bbox[3]) / 2
+                        cand_vx = det_cx - p_cx
+                        cand_vy = det_cy - p_cy
+                        vel_score = _velocity_consistency(
+                            vel_history, cand_vx, cand_vy,
+                        )
 
                     # During genuine conflicts: OF dominates, stickiness reduced
                     if is_conflict and of_pred_cx is not None:
@@ -681,6 +839,7 @@ def _resolve_merge_conflicts(
                         + w_continuity * continuity
                         + effective_stickiness * stickiness
                         + effective_of_weight * of_agreement
+                        + w_velocity * vel_score
                     )
                     if combined > best_score:
                         best_score = combined
@@ -689,6 +848,15 @@ def _resolve_merge_conflicts(
                 pass_result[fid] = best_obs  # type: ignore[assignment]
 
                 chosen = pass_result[fid]
+                # Update velocity history from chosen detection
+                if p_bbox is not None:
+                    chosen_cx = (chosen["bbox"][0] + chosen["bbox"][2]) / 2
+                    chosen_cy = (chosen["bbox"][1] + chosen["bbox"][3]) / 2
+                    prev_cx = (p_bbox[0] + p_bbox[2]) / 2
+                    prev_cy = (p_bbox[1] + p_bbox[3]) / 2
+                    vel_history.append(
+                        (chosen_cx - prev_cx, chosen_cy - prev_cy),
+                    )
                 p_bbox = chosen["bbox"]
                 p_track_id = chosen.get("track_id")
                 p_fid = fid
@@ -1818,7 +1986,7 @@ def _smooth_bboxes_velocity_aware(
     n_frames: int,
     window: int,
     flow_velocities: dict[int, tuple[float, float]],
-) -> None:
+) -> dict[int, tuple[float, float]]:
     """Smooth bboxes using a Kalman filter with constant acceleration model.
 
     Uses a proper Kalman filter (forward pass) + Rauch-Tung-Striebel (RTS)
@@ -1836,12 +2004,16 @@ def _smooth_bboxes_velocity_aware(
     n_frames : total number of frames.
     window : smoothing window; maps to noise scaling.
     flow_velocities : per-frame ``(dx, dy)`` from optical flow.
+
+    Returns
+    -------
+    Dict mapping frame_id → (vx, vy) smoothed velocity in px/frame.
     """
     import numpy as np
 
     sorted_ids = sorted(frame_bboxes.keys())
     if len(sorted_ids) < 2:
-        return
+        return {}
 
     dt = 1.0  # normalised frame interval
 
@@ -1975,7 +2147,8 @@ def _smooth_bboxes_velocity_aware(
             G = np.zeros((NS, NS))
         x_smooth[i] = x_fwd[i] + G @ (x_smooth[i + 1] - x_pred_store[i + 1])
 
-    # --- Write smoothed bboxes back ---------------------------------------
+    # --- Write smoothed bboxes and extract velocities --------------------
+    smoothed_velocities: dict[int, tuple[float, float]] = {}
     for i, fid in enumerate(sorted_ids):
         s = x_smooth[i]
         cx_s, cy_s = s[0], s[1]
@@ -1987,6 +2160,9 @@ def _smooth_bboxes_velocity_aware(
             int(round(cx_s + w_s / 2.0)),
             int(round(cy_s + h_s / 2.0)),
         ]
+        smoothed_velocities[fid] = (float(s[2]), float(s[3]))
+
+    return smoothed_velocities
 
 
 # ---------------------------------------------------------------------------

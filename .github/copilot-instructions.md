@@ -145,3 +145,15 @@ Click the skier's center in each displayed frame. Controls: SPACE=next, LEFT=pre
 - **Ultralytics YOLO**: segmentation & pose models loaded from local checkpoints.
 - **MotionBERT / GroundingDINO+SAM2**: referenced but currently stub implementations (TODO).
 - Inter-stage coupling: 2D pose reads `bbox_padded` offsets from segmentation/tracking JSON to remap crop-space keypoints to frame coordinates.
+
+## Experiment Logging
+
+When running tracking experiments (modifying algorithms, tuning hyperparameters, testing new signals), **always log results** in [experiments/experiment_log.md](experiments/experiment_log.md).
+
+Each experiment entry must include:
+- **Date** and **Goal** (one-sentence description of the hypothesis).
+- **Implementation** summary (what changed, which files).
+- **Results table** with per-video metrics (`mean_error_px`, `HOTA`) and delta vs previous best.
+- **Conclusion** explaining why it worked or didn't, and what was kept/reverted.
+
+If an experiment has multiple iterations (e.g. tuning a weight), log each iteration as a sub-entry (3a, 3b, …) with its own results table. Update the "Current Best" section at the bottom when a new best is achieved.
