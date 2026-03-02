@@ -142,7 +142,7 @@ to 30% on the hardest video and improved tracking accuracy across all videos.
 ### Stage 3 — Track Selection, Merge & Smoothing
 
 `track_skier()` in `src/tracking/tracker.py` processes the raw detections
-in five phases:
+in six phases:
 
 #### Phase A — Multi-Track Scoring & Merge
 
@@ -165,7 +165,7 @@ closest candidate detection from *any* track within a distance threshold
 across ByteTrack track-ID boundaries.
 
 When multiple candidates exist for a frame, the merge resolver scores each
-candidate on four axes:
+candidate on six axes:
 
 | Signal | Weight | Description |
 |--------|--------|-------------|
@@ -173,6 +173,8 @@ candidate on four axes:
 | **Continuity** | `w_continuity=0.6` | Proximity to predicted position (previous bbox + OF displacement) |
 | **Track stickiness** | `w_track_stickiness=0.4` | Bonus for same ByteTrack ID as previous frame |
 | **OF agreement** | `w_of_agreement=1.5` | Proximity to independent OF trace prediction |
+| **Velocity consistency** | `w_velocity=0.4` | Penalises sudden velocity changes vs recent motion history |
+| **Synthetic OF candidate** | `of_synthetic_confidence=0.3` | Injects a virtual candidate at the OF position when no YOLO detection is nearby |
 
 During **genuine conflicts** (candidate spread > 100px with OF available),
 the OF agreement weight is tripled (×3) and stickiness is reduced (×0.2),
@@ -180,7 +182,12 @@ preventing the tracker from locking onto the wrong person during crossover
 events.
 
 Candidates further than `2× of_tight_radius_px` (300px) from the OF trace
-are pre-filtered before scoring.
+are pre-filtered before scoring. When **no** candidate passes this filter,
+a **synthetic OF candidate** is injected at the OF-predicted position using
+the previous bbox dimensions (`confidence=0.3`). This prevents the tracker
+from defaulting to a bystander when the skier is mid-air and undetected by YOLO.
+The OF agreement score is zeroed for synthetic candidates to avoid circular
+self-reinforcement.
 
 #### Phase A.6 — Identity Guard
 
@@ -211,10 +218,32 @@ backward smoother** replaces the earlier EMA smoothing. The state vector is
 noise than interpolated frames. Optical flow velocities are incorporated as
 velocity measurements when available.
 
-#### Phase D — Crop Generation
+#### Phase D — Crop Generation & Manifest
 
 Padded bounding boxes are used to extract crops for downstream 2D pose
-estimation. Every frame has exactly one crop.
+estimation. Every frame has exactly one crop. The tracking manifest
+(`tracking_manifest.json`) records per-frame fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `frame_id` | int | Frame index |
+| `frame_file` | str | Source frame filename |
+| `detected` | bool | True if from a YOLO detection |
+| `interpolated` | bool | True if from OF gap-filling |
+| `of_synthetic` | bool | True if from a synthetic OF candidate |
+| `bbox` | [x1,y1,x2,y2] | Tight bounding box |
+| `bbox_padded` | [x1,y1,x2,y2] | Padded bbox used for crop |
+| `confidence` | float | Detection confidence (0.3 for synthetics) |
+| `track_id` | int | ByteTrack ID (−1 for interpolated) |
+| `crop_file` | str | Path to the extracted crop image |
+| `flow_displacement` | [dx,dy] | Optical flow displacement vector |
+| `of_predicted` | [cx,cy] | OF-predicted center position |
+| `velocity` | [vx,vy] | Frame-to-frame velocity vector |
+| `speed_px_per_frame` | float | Scalar speed (pixels/frame) |
+
+Top-level manifest fields include `velocity_stats` (aggregate `mean_speed`,
+`max_speed`, `mean_vy`) and `identity_guard_rejections` (count of frames
+rejected by the identity guard).
 
 ### Tracking Accuracy
 
@@ -223,16 +252,17 @@ Evaluated against hand-annotated ground truth on 3 competition videos
 
 | Video | Mean Error (px) | HOTA |
 |-------|:---:|:---:|
-| Arno Vuarnier | 63.5 | 0.732 |
-| Andreas Bakke | 18.2 | 0.895 |
+| Arno Vuarnier | 42.4 | 0.756 |
+| Andreas Bakke | 18.2 | 0.896 |
 | Lach Powell | 36.9 | 0.880 |
-| **Overall** | **39.5** | **0.836** |
+| **Overall** | **32.5** | **0.844** |
 
 Key improvement history:
 - Baseline (single-track, EMA): 107.4px mean, 0.710 HOTA
 - OF-weighted merge resolution: 64.7px, 0.760 HOTA
 - OF candidate pre-filtering: 62.5px, 0.766 HOTA
-- **imgsz=1280 + multi-candidate OF trace: 39.5px, 0.836 HOTA**
+- imgsz=1280 + multi-candidate OF trace: 39.5px, 0.836 HOTA
+- **Synthetic OF candidates: 32.5px, 0.844 HOTA**
 
 ### Gap Filling with Optical Flow
 
@@ -278,6 +308,17 @@ All tracking parameters live in the `tracking:` section of `config.yaml`:
 | `flow_max_extrapolate_frames` | `30` | Max frames to propagate via OF for leading/trailing gaps |
 | `identity_guard_enabled` | `true` | Hybrid OF identity guard |
 | `identity_guard_max_jump_px` | `150` | Reject detection if too far from OF prediction |
+| `identity_guard_reanchor_interval` | `50` | Re-anchor OF seed every N confident detected frames |
+| `identity_guard_reanchor_min_conf` | `0.5` | Minimum detection confidence for re-anchor |
+| `identity_guard_max_drift_px` | `200` | Force re-anchor if OF drift exceeds this |
+| `w_velocity` | `0.4` | Weight for velocity-consistency scoring (0 = disabled) |
+| `vel_history_len` | `5` | Number of recent velocity vectors to maintain |
+| `of_synthetic_confidence` | `0.3` | Confidence for synthetic OF candidates (0 = disabled) |
+| `cmc_enabled` | `false` | Enable camera motion compensation for gap filling |
+| `cmc_method` | `"ecc"` | CMC method: `"orb"`, `"ecc"`, or `"none"` |
+| `cmc_exclude_margin` | `1.5` | Exclude N× skier bbox area from feature matching |
+| `cmc_min_features` | `20` | Minimum matched features for valid homography |
+| `cmc_ransac_threshold` | `3.0` | RANSAC outlier threshold in pixels |
 
 Set `tracking.enabled: false` to bypass tracking entirely and fall back to
 the per-frame segmentation selection (previous behaviour).
