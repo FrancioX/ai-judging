@@ -1,6 +1,6 @@
 """Unit tests for the identity guard — optical flow-based identity switch detection.
 
-Tests the _maintain_of_trace() and _validate_identity() functions in isolation
+Tests the _build_of_trace() and _validate_identity() functions in isolation
 with synthetic data.
 """
 
@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import pytest
 
-from src.tracking.tracker import _maintain_of_trace, _validate_identity
+from src.tracking.tracker import _build_of_trace, _validate_identity
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +99,13 @@ def test_maintain_of_trace_basic(dummy_seg_frames):
             "track_id": 1,
         }
 
+    # Share frame cache for OF trace computation
+    frame_cache: dict[int, np.ndarray | None] = {}
+
     # Run OF trace
-    of_trace = _maintain_of_trace(
-        selected_obs, n_frames, width, height, frame_dir, seg_frames,
+    of_trace = _build_of_trace(
+        n_frames, width, height, frame_dir, seg_frames, frame_cache,
+        selected_obs=selected_obs,
         method="dense",  # Use dense for synthetic data
         reanchor_interval=5,
         reanchor_min_conf=0.5,
@@ -145,9 +149,13 @@ def test_maintain_of_trace_reanchoring(dummy_seg_frames):
             "track_id": 1,
         }
 
+    # Share frame cache for OF trace computation
+    frame_cache: dict[int, np.ndarray | None] = {}
+
     # Run with small re-anchor interval
-    of_trace = _maintain_of_trace(
-        selected_obs, n_frames, width, height, frame_dir, seg_frames,
+    of_trace = _build_of_trace(
+        n_frames, width, height, frame_dir, seg_frames, frame_cache,
+        selected_obs=selected_obs,
         method="dense",
         reanchor_interval=2,  # Re-anchor every 2 detections
         reanchor_min_conf=0.5,
@@ -318,9 +326,13 @@ def test_of_trace_and_validate_identity_integration(dummy_seg_frames):
             "track_id": 1,
         }
 
+    # Share frame cache for OF trace computation
+    frame_cache: dict[int, np.ndarray | None] = {}
+
     # Build OF trace
-    of_trace = _maintain_of_trace(
-        selected_obs, n_frames, width, height, frame_dir, seg_frames,
+    of_trace = _build_of_trace(
+        n_frames, width, height, frame_dir, seg_frames, frame_cache,
+        selected_obs=selected_obs,
         method="dense",
         reanchor_interval=5,
         reanchor_min_conf=0.5,

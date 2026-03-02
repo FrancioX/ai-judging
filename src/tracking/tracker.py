@@ -10,9 +10,13 @@ ByteTrack track IDs) and produces a refined tracking manifest where:
    Detection gaps are filled using optical-flow-guided motion estimation
    (sparse Lucas-Kanade with dense Farneback fallback). When optical flow
    is disabled or unavailable, falls back to linear interpolation.
-3. Bounding boxes are temporally smoothed with a velocity-aware
+3. A unified optical-flow trace is computed once for the entire video,
+   serving dual purposes: (a) merge-conflict scoring via OF agreement,
+   and (b) identity validation to prevent tracking switches. The trace
+   re-anchors to detections periodically to prevent drift.
+4. Bounding boxes are temporally smoothed with a velocity-aware
    bidirectional filter using per-frame flow velocities.
-4. New crops are written using the refined bounding boxes.
+5. New crops are written using the refined bounding boxes.
 
 This stage sits between segmentation and 2D-pose estimation and follows
 the project convention of one public function per module returning a Path.
@@ -180,6 +184,9 @@ def track_skier(
     max_dist = math.sqrt((img_w / 2) ** 2 + (img_h / 2) ** 2)
     cx, cy = img_w / 2, img_h / 2
 
+    # Create shared frame cache for all OF operations
+    shared_frame_cache: dict[int, "np.ndarray | None"] = {}
+
     # Score all tracks
     track_scores: list[tuple[int, float, int]] = []  # (track_id, score, n_detections)
 
@@ -250,11 +257,13 @@ def track_skier(
             # Seed from the best track's first detection
             best_track_obs_list = tracks[track_scores[0][0]]
             seed_obs = best_track_obs_list[0] if best_track_obs_list else None
-            print(f"  Building multi-candidate OF trace (seed: track "
+            print(f"  Building OF trace for merge (seed: track "
                   f"{track_scores[0][0]}, {len(frame_candidates)} frames with detections)…")
-            preliminary_of_trace = _build_multi_candidate_of_trace(
-                frame_candidates, n_frames, img_w, img_h,
+            preliminary_of_trace = _build_of_trace(
+                n_frames, img_w, img_h,
                 frame_dir, seg_frames,
+                shared_frame_cache,
+                frame_candidates=frame_candidates,
                 seed_obs=seed_obs,
                 method=optical_flow_method,
                 min_keypoints=flow_min_keypoints,
@@ -262,7 +271,7 @@ def track_skier(
                 reanchor_interval=5,
                 max_drift_px=150.0,
             )
-            print(f"  → Preliminary OF trace: {len(preliminary_of_trace)} frames")
+            print(f"  → OF trace: {len(preliminary_of_trace)} frames")
 
         selected_obs = _resolve_merge_conflicts(
             frame_candidates, cx, cy, max_dist, w_conf, w_center,
@@ -304,9 +313,12 @@ def track_skier(
     if identity_guard_enabled and use_flow:
         print(f"  Identity guard: enabled (max_jump={identity_guard_max_jump_px}px, "
               f"reanchor_interval={identity_guard_reanchor_interval})")
-        of_trace = _maintain_of_trace(
-            selected_obs, n_frames, img_w, img_h,
+        # Build OF trace using selected_obs detections (reuse multi-candidate params for now)
+        of_trace = _build_of_trace(
+            n_frames, img_w, img_h,
             frame_dir, seg_frames,
+            shared_frame_cache,
+            selected_obs=selected_obs,
             method=optical_flow_method,
             min_keypoints=flow_min_keypoints,
             reanchor_interval=identity_guard_reanchor_interval,
@@ -350,6 +362,8 @@ def track_skier(
                 )
     elif identity_guard_enabled and not use_flow:
         print("  ⚠ Identity guard enabled but optical flow disabled — skipping")
+    elif identity_guard_enabled and not use_flow:
+        print("  ⚠ Identity guard enabled but optical flow disabled — skipping")
 
     # ------------------------------------------------------------------
     # Phase B — Assemble per-frame bboxes: detected → interpolated → extrapolated
@@ -384,6 +398,7 @@ def track_skier(
         flow_velocities, of_method_used = _fill_gaps_optical_flow(
             frame_bboxes, n_frames, img_w, img_h,
             frame_dir, seg_frames,
+            shared_frame_cache,
             method=optical_flow_method,
             min_keypoints=flow_min_keypoints,
             max_extrapolate=flow_max_extrapolate_frames,
@@ -673,30 +688,6 @@ def _resolve_merge_conflicts(
     -------
     dict mapping ``frame_id`` → chosen observation.
     """
-    use_flow = (
-        optical_flow_method != "none"
-        and _HAS_NUMPY
-        and frame_dir is not None
-        and seg_frames is not None
-    )
-
-    # Small LRU cache for frames to avoid re-reads
-    _frame_cache: dict[int, "np.ndarray | None"] = {}
-
-    def _get_frame(fid: int) -> "np.ndarray | None":
-        if fid not in _frame_cache:
-            if seg_frames is not None and frame_dir is not None:
-                fpath = frame_dir / seg_frames[fid]["frame_file"]
-                img = cv2.imread(str(fpath))
-                _frame_cache[fid] = img
-            else:
-                _frame_cache[fid] = None
-            # Keep cache bounded
-            if len(_frame_cache) > 4:
-                oldest = next(iter(_frame_cache))
-                del _frame_cache[oldest]
-        return _frame_cache.get(fid)
-
     sorted_fids = sorted(frame_candidates)
 
     # Helper: score one direction (forward or backward)
@@ -764,25 +755,13 @@ def _resolve_merge_conflicts(
                 p_track_id = candidates[0].get("track_id")
                 p_fid = fid
             elif len(candidates) > 1:
-                # OF-predicted center from previous chosen bbox
+                # Continuity prediction: use OF trace prediction
                 predicted_cx, predicted_cy = None, None
-                if p_bbox is not None:
-                    pred_cx = (p_bbox[0] + p_bbox[2]) / 2
-                    pred_cy = (p_bbox[1] + p_bbox[3]) / 2
-
-                    if use_flow and p_fid is not None:
-                        img_prev = _get_frame(p_fid)
-                        img_cur = _get_frame(fid)
-                        if img_prev is not None and img_cur is not None:
-                            dx, dy, _m = _compute_flow_displacement(
-                                img_prev, img_cur, p_bbox,
-                                method=optical_flow_method,
-                                min_keypoints=flow_min_keypoints,
-                            )
-                            pred_cx += dx
-                            pred_cy += dy
-
-                    predicted_cx, predicted_cy = pred_cx, pred_cy
+                if of_trace is not None and p_fid is not None and p_fid in of_trace:
+                    # Use the OF trace's predicted position from previous frame
+                    # as the baseline for continuity scoring
+                    prev_of_cx, prev_of_cy = of_trace[p_fid]
+                    predicted_cx, predicted_cy = prev_of_cx, prev_of_cy
 
                 # OF trace prediction for this frame
                 of_pred_cx, of_pred_cy = None, None
@@ -803,7 +782,7 @@ def _resolve_merge_conflicts(
                         det, cx, cy, max_dist, w_conf, w_center,
                     )
 
-                    # Continuity bonus
+                    # Continuity bonus (based on OF trace prediction)
                     if predicted_cx is not None and predicted_cy is not None:
                         det_cx = (det["bbox"][0] + det["bbox"][2]) / 2
                         det_cy = (det["bbox"][1] + det["bbox"][3]) / 2
@@ -1296,6 +1275,7 @@ def _fill_gaps_optical_flow(
     img_h: int,
     frame_dir: Path,
     seg_frames: list[dict],
+    frame_cache: dict[int, "np.ndarray | None"],
     *,
     method: str = "auto",
     min_keypoints: int = 5,
@@ -1321,6 +1301,7 @@ def _fill_gaps_optical_flow(
     img_w, img_h : image dimensions.
     frame_dir : path to frame images.
     seg_frames : list of segmentation frame dicts (for filenames).
+    frame_cache : shared dict to cache loaded frames (modified in-place).
     method : optical flow method.
     min_keypoints : sparse→dense fallback threshold.
     max_extrapolate : maximum frames to propagate for leading/trailing gaps.
@@ -1343,20 +1324,18 @@ def _fill_gaps_optical_flow(
     flow_velocities: dict[int, tuple[float, float]] = {}
     methods_used: set[str] = set()
 
-    # Cache for loaded frame images (keep limited sliding window)
-    _img_cache: dict[int, "np.ndarray"] = {}
-
     def _get_frame_img(fid: int) -> "np.ndarray | None":
-        if fid in _img_cache:
-            return _img_cache[fid]
+        """Get frame from shared cache or load and cache it."""
+        if fid in frame_cache:
+            return frame_cache[fid]
         if 0 <= fid < n_frames:
             img = _read_gray(frame_dir, seg_frames[fid]["frame_file"])
-            # Keep cache bounded to ~20 frames
-            if len(_img_cache) > 20:
-                oldest = min(_img_cache.keys())
-                del _img_cache[oldest]
+            # Keep cache bounded to ~30 frames
+            if len(frame_cache) > 30:
+                oldest = min(frame_cache.keys())
+                del frame_cache[oldest]
             if img is not None:
-                _img_cache[fid] = img
+                frame_cache[fid] = img
             return img
         return None
 
