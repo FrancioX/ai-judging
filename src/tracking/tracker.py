@@ -299,6 +299,7 @@ def track_skier(
     # ------------------------------------------------------------------
     of_trace: dict[int, tuple[float, float]] = {}
     identity_rejections = 0
+    identity_jump_stats: dict[str, object] | None = None
 
     if identity_guard_enabled and use_flow:
         print(f"  Identity guard: enabled (max_jump={identity_guard_max_jump_px}px, "
@@ -318,11 +319,37 @@ def track_skier(
             max_jump_px=identity_guard_max_jump_px,
         )
         identity_rejections = identity_meta.get("rejections", 0)
+        raw_jump_stats = identity_meta.get("jump_stats")
+        if isinstance(raw_jump_stats, dict):
+            identity_jump_stats = raw_jump_stats
 
         if identity_rejections > 0:
             print(f"  → Identity guard: rejected {identity_rejections} detections")
+        if identity_jump_stats is not None:
+            of_stats = identity_jump_stats.get("of_dist_px")
+            if isinstance(of_stats, dict) and of_stats.get("count", 0) > 0:
+                over_max = int(identity_jump_stats.get("over_max_jump_count", 0))
+                print(
+                    "  → Identity jumps vs OF (px): "
+                    f"mean={of_stats['mean']}, p90={of_stats['p90']}, "
+                    f"max={of_stats['max']} "
+                    f"(>max_jump: {over_max}/{of_stats['count']})",
+                )
+            prev_stats = identity_jump_stats.get("prev_det_dist_px")
+            if isinstance(prev_stats, dict) and prev_stats.get("count", 0) > 0:
+                over_prev = int(identity_jump_stats.get("over_prev_jump_count", 0))
+                prev_threshold = identity_jump_stats.get(
+                    "prev_jump_threshold_px",
+                    round(identity_guard_max_jump_px * 0.5, 2),
+                )
+                print(
+                    "  → Identity jumps vs prev det (px): "
+                    f"mean={prev_stats['mean']}, p90={prev_stats['p90']}, "
+                    f"max={prev_stats['max']} "
+                    f"(>{prev_threshold}: {over_prev}/{prev_stats['count']})",
+                )
     elif identity_guard_enabled and not use_flow:
-        print(f"  ⚠ Identity guard enabled but optical flow disabled — skipping")
+        print("  ⚠ Identity guard enabled but optical flow disabled — skipping")
 
     # ------------------------------------------------------------------
     # Phase B — Assemble per-frame bboxes: detected → interpolated → extrapolated
@@ -473,6 +500,7 @@ def track_skier(
         "optical_flow_method_used": of_method_used if use_flow else "none",
         "identity_guard_enabled": identity_guard_enabled,
         "identity_guard_rejections": identity_rejections,
+        "identity_guard_jump_stats": identity_jump_stats,
         "velocity_stats": velocity_stats,
         "n_frames": n_frames,
         "frames": manifest_frames,
@@ -1524,231 +1552,90 @@ def _fill_gaps_optical_flow(
 
 
 # ---------------------------------------------------------------------------
-# Identity guard optical flow trace
+# Unified optical flow trace (replaces _maintain_of_trace & _build_multi_candidate_of_trace)
 # ---------------------------------------------------------------------------
 
-def _maintain_of_trace(
-    selected_obs: dict[int, dict],
+def _build_of_trace(
     n_frames: int,
     img_w: int,
     img_h: int,
     frame_dir: Path,
     seg_frames: list[dict],
+    frame_cache: dict[int, "np.ndarray | None"],
     *,
-    method: str = "auto",
-    min_keypoints: int = 5,
-    reanchor_interval: int = 50,
-    reanchor_min_conf: float = 0.5,
-    max_drift_px: float = 200.0,
-) -> dict[int, tuple[float, float]]:
-    """Maintain a continuous optical-flow trace to guard against identity switches.
-
-    Runs a single-point Lucas-Kanade tracker through the entire video, seeded
-    at the first detected bbox centre. Periodically re-anchors to confident
-    detections to prevent drift accumulation. The OF trace is independent of
-    the detection-based tracking and serves as a reference for identity validation.
-
-    Parameters
-    ----------
-    selected_obs : dict mapping frame_id → detection observation (with bbox, confidence).
-    n_frames : total number of frames in the video.
-    img_w, img_h : image dimensions.
-    frame_dir : directory containing frame images.
-    seg_frames : list of segmentation frame dicts (for filenames).
-    method : optical flow method ("auto" | "sparse" | "dense").
-    min_keypoints : sparse→dense fallback threshold.
-    reanchor_interval : re-anchor to a detection every N detected frames.
-    reanchor_min_conf : minimum confidence to use a detection as re-anchor.
-    max_drift_px : force re-anchor if cumulative drift since last anchor exceeds this.
-
-    Returns
-    -------
-    Dict mapping frame_id → (of_cx, of_cy) — the OF-predicted skier centre for
-    every frame in the video.
-    """
-    if not selected_obs or not _HAS_NUMPY:
-        return {}
-
-    # Find first detected frame to seed the OF trace
-    detected_ids = sorted(selected_obs.keys())
-    if not detected_ids:
-        return {}
-
-    first_fid = detected_ids[0]
-    first_bbox = selected_obs[first_fid]["bbox"]
-    seed_cx = (first_bbox[0] + first_bbox[2]) / 2.0
-    seed_cy = (first_bbox[1] + first_bbox[3]) / 2.0
-
-    of_trace: dict[int, tuple[float, float]] = {first_fid: (seed_cx, seed_cy)}
-
-    # Cache frames to avoid repeated reads
-    _frame_cache: dict[int, "np.ndarray | None"] = {}
-
-    def _get_frame_img(fid: int) -> "np.ndarray | None":
-        if fid in _frame_cache:
-            return _frame_cache[fid]
-        if 0 <= fid < n_frames:
-            img = _read_gray(frame_dir, seg_frames[fid]["frame_file"])
-            if len(_frame_cache) > 30:
-                oldest = min(_frame_cache.keys())
-                del _frame_cache[oldest]
-            if img is not None:
-                _frame_cache[fid] = img
-            return img
-        return None
-
-    # Track state for re-anchoring
-    current_cx, current_cy = seed_cx, seed_cy
-    anchor_cx, anchor_cy = seed_cx, seed_cy
-    cumulative_drift = 0.0
-    detected_since_anchor = 0
-
-    # Forward trace from first detected frame
-    for fid in range(first_fid + 1, n_frames):
-        # Try to compute OF from previous frame
-        img_prev = _get_frame_img(fid - 1)
-        img_cur = _get_frame_img(fid)
-
-        dx, dy = 0.0, 0.0
-        if img_prev is not None and img_cur is not None:
-            # Create a temporary bbox around the current predicted position
-            pad = 30
-            temp_bbox = [
-                max(0, int(current_cx - pad)),
-                max(0, int(current_cy - pad)),
-                min(img_w, int(current_cx + pad)),
-                min(img_h, int(current_cy + pad)),
-            ]
-            dx, dy, _ = _compute_flow_displacement(
-                img_prev, img_cur, temp_bbox,
-                method=method, min_keypoints=min_keypoints,
-            )
-
-        # Update predicted position
-        current_cx += dx
-        current_cy += dy
-
-        # Clamp to image bounds
-        current_cx = max(0, min(current_cx, img_w - 1))
-        current_cy = max(0, min(current_cy, img_h - 1))
-
-        of_trace[fid] = (current_cx, current_cy)
-
-        # Track cumulative drift since last anchor
-        cumulative_drift += math.sqrt(dx * dx + dy * dy)
-
-        # Check for re-anchoring opportunity
-        if fid in selected_obs:
-            det = selected_obs[fid]
-            det_conf = det.get("confidence", 0.0)
-
-            if det_conf >= reanchor_min_conf:
-                detected_since_anchor += 1
-
-                # Re-anchor periodically or if drift is too large
-                should_reanchor = (
-                    detected_since_anchor >= reanchor_interval
-                    or cumulative_drift > max_drift_px
-                )
-
-                if should_reanchor:
-                    det_bbox = det["bbox"]
-                    anchor_cx = (det_bbox[0] + det_bbox[2]) / 2.0
-                    anchor_cy = (det_bbox[1] + det_bbox[3]) / 2.0
-                    current_cx = anchor_cx
-                    current_cy = anchor_cy
-
-                    of_trace[fid] = (anchor_cx, anchor_cy)
-                    cumulative_drift = 0.0
-                    detected_since_anchor = 0
-
-    # Backward trace from first detected frame (fill leading frames)
-    if first_fid > 0:
-        current_cx, current_cy = seed_cx, seed_cy
-
-        for fid in range(first_fid - 1, -1, -1):
-            img_cur = _get_frame_img(fid)
-            img_next = _get_frame_img(fid + 1)
-
-            dx, dy = 0.0, 0.0
-            if img_cur is not None and img_next is not None:
-                pad = 30
-                temp_bbox = [
-                    max(0, int(current_cx - pad)),
-                    max(0, int(current_cy - pad)),
-                    min(img_w, int(current_cx + pad)),
-                    min(img_h, int(current_cy + pad)),
-                ]
-                dx, dy, _ = _compute_flow_displacement(
-                    img_next, img_cur, temp_bbox,
-                    method=method, min_keypoints=min_keypoints,
-                )
-
-            current_cx += dx
-            current_cy += dy
-            current_cx = max(0, min(current_cx, img_w - 1))
-            current_cy = max(0, min(current_cy, img_h - 1))
-
-            of_trace[fid] = (current_cx, current_cy)
-
-    return of_trace
-
-
-def _build_multi_candidate_of_trace(
-    frame_candidates: dict[int, list[dict]],
-    n_frames: int,
-    img_w: int,
-    img_h: int,
-    frame_dir: Path,
-    seg_frames: list[dict],
-    *,
+    frame_candidates: dict[int, list[dict]] | None = None,
+    selected_obs: dict[int, dict] | None = None,
     seed_obs: dict | None = None,
     method: str = "auto",
     min_keypoints: int = 5,
     max_reanchor_dist_px: float = 150.0,
     reanchor_interval: int = 5,
-    max_drift_px: float = 150.0,
+    reanchor_min_conf: float = 0.5,
+    max_drift_px: float = 200.0,
 ) -> dict[int, tuple[float, float]]:
-    """Build an OF trace that can re-anchor to ANY candidate detection.
+    """Build a unified optical-flow trace with configurable re-anchoring policy.
 
-    Unlike ``_maintain_of_trace`` which only re-anchors to detections from
-    a single pre-selected track, this function examines ALL candidate
-    detections at each frame and re-anchors to the closest one within
-    ``max_reanchor_dist_px``.  This lets the OF trace follow the skier
-    seamlessly across ByteTrack track-ID boundaries.
+    Computes a single frame-by-frame OF trace through the entire video using
+    Lucas-Kanade (sparse) or Farneback (dense) flow. The trace re-anchors to
+    detections periodically to prevent drift.
+
+    **Two re-anchoring modes:**
+    - **Multi-candidate mode** (when frame_candidates is supplied): re-anchor to
+      the closest detection from ANY track within max_reanchor_dist_px, every
+      reanchor_interval frames. Used for merge conflict resolution.
+    - **Selected-obs mode** (when selected_obs is supplied): re-anchor to confident
+      detections from the selected track only, every reanchor_interval frames,
+      with a confidence threshold. Used for identity guard validation.
 
     Parameters
     ----------
-    frame_candidates : mapping from ``frame_id`` to list of candidate dicts
-        (each with ``bbox``, ``confidence``).
     n_frames : total number of frames in the video.
     img_w, img_h : image dimensions.
     frame_dir : directory containing frame images.
     seg_frames : list of segmentation frame dicts (for filenames).
-    seed_obs : optional initial observation to seed from.  If *None*, seeds
-        from the highest-confidence detection in the first frame with
-        candidates.
-    method : optical flow method.
+    frame_cache : shared dict to cache loaded frames (modified in-place).
+    frame_candidates : optional dict from frame_id → list of candidate dicts,
+        for multi-candidate re-anchoring. Mutually exclusive with selected_obs.
+    selected_obs : optional dict from frame_id → detection observation dict,
+        for single-track re-anchoring. Mutually exclusive with frame_candidates.
+    seed_obs : optional initial observation to seed from. If None, seeds from
+        the highest-confidence detection in the provided detections.
+    method : optical flow method ("auto" | "sparse" | "dense").
     min_keypoints : sparse→dense fallback threshold.
     max_reanchor_dist_px : only re-anchor to a candidate within this distance
-        from the current OF prediction.
-    reanchor_interval : re-anchor every N frames that have a close candidate.
+        from the current OF prediction (multi-candidate mode).
+    reanchor_interval : re-anchor every N frames that have a close candidate
+        (multi-candidate) or every N detected frames (selected-obs).
+    reanchor_min_conf : minimum detection confidence for re-anchoring
+        (selected-obs mode only).
     max_drift_px : force re-anchor if cumulative drift exceeds this.
 
     Returns
     -------
-    Dict mapping frame_id → (of_cx, of_cy).
+    Dict mapping frame_id → (of_cx, of_cy) — the OF-predicted skier centre
+    for every frame in the video.
     """
-    if not frame_candidates or not _HAS_NUMPY:
+    if not _HAS_NUMPY:
+        return {}
+
+    # Determine mode and seed
+    use_candidates = frame_candidates is not None
+    use_selected = selected_obs is not None
+
+    if not use_candidates and not use_selected:
         return {}
 
     # --- Determine seed position ---
+    seed_fid = None
+    seed_cx = None
+    seed_cy = None
+
     if seed_obs is not None:
         seed_bbox = seed_obs["bbox"]
         seed_fid = seed_obs["frame_id"]
         seed_cx = (seed_bbox[0] + seed_bbox[2]) / 2.0
         seed_cy = (seed_bbox[1] + seed_bbox[3]) / 2.0
-    else:
+    elif use_candidates:
         # Find the highest-confidence detection across all early candidates
         best_seed: dict | None = None
         best_conf = -1.0
@@ -1766,33 +1653,44 @@ def _build_multi_candidate_of_trace(
         seed_bbox = best_seed["bbox"]
         seed_cx = (seed_bbox[0] + seed_bbox[2]) / 2.0
         seed_cy = (seed_bbox[1] + seed_bbox[3]) / 2.0
+    elif use_selected:
+        # Find first detected frame to seed
+        detected_ids = sorted(selected_obs.keys())
+        if not detected_ids:
+            return {}
+        seed_fid = detected_ids[0]
+        first_bbox = selected_obs[seed_fid]["bbox"]
+        seed_cx = (first_bbox[0] + first_bbox[2]) / 2.0
+        seed_cy = (first_bbox[1] + first_bbox[3]) / 2.0
+
+    if seed_fid is None or seed_cx is None or seed_cy is None:
+        return {}
 
     of_trace: dict[int, tuple[float, float]] = {seed_fid: (seed_cx, seed_cy)}
 
-    # Frame cache
-    _frame_cache: dict[int, "np.ndarray | None"] = {}
-
     def _get_frame_img(fid: int) -> "np.ndarray | None":
-        if fid in _frame_cache:
-            return _frame_cache[fid]
+        """Get frame from cache or load and cache it."""
+        if fid in frame_cache:
+            return frame_cache[fid]
         if 0 <= fid < n_frames:
             img = _read_gray(frame_dir, seg_frames[fid]["frame_file"])
-            if len(_frame_cache) > 30:
-                oldest = min(_frame_cache.keys())
-                del _frame_cache[oldest]
+            if len(frame_cache) > 30:
+                # Remove oldest frame to keep cache bounded
+                oldest = min(frame_cache.keys())
+                del frame_cache[oldest]
             if img is not None:
-                _frame_cache[fid] = img
+                frame_cache[fid] = img
             return img
         return None
 
     def _find_closest_candidate(
         fid: int, pred_cx: float, pred_cy: float,
     ) -> tuple[float, float, float] | None:
-        """Find the candidate detection closest to (pred_cx, pred_cy).
+        """Find the candidate detection closest to (pred_cx, pred_cy) [multi-candidate mode].
 
         Returns (cx, cy, dist) or None if no candidates in this frame.
         """
-        if fid not in frame_candidates:
+        if not use_candidates or fid not in frame_candidates:
             return None
         best_cx, best_cy, best_dist = 0.0, 0.0, float("inf")
         for det in frame_candidates[fid]:
@@ -1837,27 +1735,50 @@ def _build_multi_candidate_of_trace(
         cumulative_drift += math.sqrt(dx * dx + dy * dy)
         frames_since_anchor += 1
 
-        # Try to re-anchor to closest candidate
-        closest = _find_closest_candidate(fid, current_cx, current_cy)
-        if closest is not None:
-            c_cx, c_cy, c_dist = closest
-            should_reanchor = (
-                c_dist < max_reanchor_dist_px
-                and (
-                    frames_since_anchor >= reanchor_interval
-                    or cumulative_drift > max_drift_px
+        # Try to re-anchor using appropriate policy
+        if use_candidates:
+            # Multi-candidate mode: re-anchor to closest candidate within distance
+            closest = _find_closest_candidate(fid, current_cx, current_cy)
+            if closest is not None:
+                c_cx, c_cy, c_dist = closest
+                should_reanchor = (
+                    c_dist < max_reanchor_dist_px
+                    and (
+                        frames_since_anchor >= reanchor_interval
+                        or cumulative_drift > max_drift_px
+                    )
                 )
-            )
-            if should_reanchor:
-                current_cx = c_cx
-                current_cy = c_cy
-                of_trace[fid] = (c_cx, c_cy)
-                cumulative_drift = 0.0
-                frames_since_anchor = 0
+                if should_reanchor:
+                    current_cx = c_cx
+                    current_cy = c_cy
+                    of_trace[fid] = (c_cx, c_cy)
+                    cumulative_drift = 0.0
+                    frames_since_anchor = 0
+        elif use_selected:
+            # Selected-obs mode: re-anchor to confident detections
+            if fid in selected_obs:
+                det = selected_obs[fid]
+                det_conf = det.get("confidence", 0.0)
+                if det_conf >= reanchor_min_conf:
+                    frames_since_anchor += 1
+                    should_reanchor = (
+                        frames_since_anchor >= reanchor_interval
+                        or cumulative_drift > max_drift_px
+                    )
+                    if should_reanchor:
+                        det_bbox = det["bbox"]
+                        det_cx = (det_bbox[0] + det_bbox[2]) / 2.0
+                        det_cy = (det_bbox[1] + det_bbox[3]) / 2.0
+                        current_cx = det_cx
+                        current_cy = det_cy
+                        of_trace[fid] = (det_cx, det_cy)
+                        cumulative_drift = 0.0
+                        frames_since_anchor = 0
 
-    # --- Backward trace (leading frames) ---
+    # --- Backward trace (fill leading frames) ---
     if seed_fid > 0:
         current_cx, current_cy = seed_cx, seed_cy
+
         for fid in range(seed_fid - 1, -1, -1):
             img_cur = _get_frame_img(fid)
             img_next = _get_frame_img(fid + 1)
@@ -1880,6 +1801,7 @@ def _build_multi_candidate_of_trace(
             current_cy += dy
             current_cx = max(0, min(current_cx, img_w - 1))
             current_cy = max(0, min(current_cy, img_h - 1))
+
             of_trace[fid] = (current_cx, current_cy)
 
     return of_trace
@@ -1890,7 +1812,7 @@ def _validate_identity(
     of_trace: dict[int, tuple[float, float]],
     *,
     max_jump_px: float = 150.0,
-) -> tuple[dict[int, dict], dict[str, int]]:
+) -> tuple[dict[int, dict], dict[str, object]]:
     """Validate detections against OF trace to reject identity switches (in-place).
 
     Compares each detection's center against the OF-predicted position. If a
@@ -1910,20 +1832,47 @@ def _validate_identity(
     -------
     Tuple of (updated selected_obs, metadata_dict) where metadata_dict contains:
         - "rejections": count of rejected detections
-        - "reanchor_count": number of re-anchors (informational)
+        - "jump_stats": summary stats for distances used by the guard
     """
+    def _distance_stats(values: list[float]) -> dict[str, float | int] | None:
+        if not values:
+            return None
+        sorted_vals = sorted(values)
+
+        def _quantile(q: float) -> float:
+            pos = (len(sorted_vals) - 1) * q
+            lo = int(math.floor(pos))
+            hi = int(math.ceil(pos))
+            if lo == hi:
+                return sorted_vals[lo]
+            weight = pos - lo
+            return sorted_vals[lo] * (1.0 - weight) + sorted_vals[hi] * weight
+
+        return {
+            "count": len(sorted_vals),
+            "mean": round(sum(sorted_vals) / len(sorted_vals), 2),
+            "p50": round(_quantile(0.5), 2),
+            "p90": round(_quantile(0.9), 2),
+            "p95": round(_quantile(0.95), 2),
+            "max": round(sorted_vals[-1], 2),
+        }
+
     if not of_trace:
-        return selected_obs, {"rejections": 0}
+        return selected_obs, {"rejections": 0, "jump_stats": None}
 
     sorted_fids = sorted(selected_obs.keys())
     if not sorted_fids:
-        return selected_obs, {"rejections": 0}
+        return selected_obs, {"rejections": 0, "jump_stats": None}
 
     rejections = 0
     in_wrong_identity_sequence = False
     prev_det_cx, prev_det_cy = None, None
 
     fids_to_reject: set[int] = set()
+    of_distances: list[float] = []
+    prev_det_distances: list[float] = []
+    rejected_of_distances: list[float] = []
+    rejected_prev_det_distances: list[float] = []
 
     for fid in sorted_fids:
         if fid not in of_trace:
@@ -1938,6 +1887,7 @@ def _validate_identity(
 
         # Distance from detection to OF prediction
         of_dist = math.sqrt((det_cx - of_cx) ** 2 + (det_cy - of_cy) ** 2)
+        of_distances.append(of_dist)
 
         # Distance from detection to previous detection
         prev_det_dist = float('inf')
@@ -1945,6 +1895,7 @@ def _validate_identity(
             prev_det_dist = math.sqrt(
                 (det_cx - prev_det_cx) ** 2 + (det_cy - prev_det_cy) ** 2
             )
+            prev_det_distances.append(prev_det_dist)
 
         # Check if this looks like an identity switch:
         # Large jump from OF AND large jump from previous detection
@@ -1960,6 +1911,9 @@ def _validate_identity(
 
             fids_to_reject.add(fid)
             rejections += 1
+            rejected_of_distances.append(of_dist)
+            if math.isfinite(prev_det_dist):
+                rejected_prev_det_distances.append(prev_det_dist)
         else:
             # Back to a good detection (close to OF or first frame)
             if in_wrong_identity_sequence:
@@ -1972,7 +1926,23 @@ def _validate_identity(
     for fid in fids_to_reject:
         del selected_obs[fid]
 
-    metadata = {"rejections": rejections}
+    metadata = {
+        "rejections": rejections,
+        "jump_stats": {
+            "max_jump_px": round(max_jump_px, 2),
+            "prev_jump_threshold_px": round(max_jump_px * 0.5, 2),
+            "of_dist_px": _distance_stats(of_distances),
+            "prev_det_dist_px": _distance_stats(prev_det_distances),
+            "rejected_of_dist_px": _distance_stats(rejected_of_distances),
+            "rejected_prev_det_dist_px": _distance_stats(
+                rejected_prev_det_distances,
+            ),
+            "over_max_jump_count": sum(1 for d in of_distances if d > max_jump_px),
+            "over_prev_jump_count": sum(
+                1 for d in prev_det_distances if d > max_jump_px * 0.5
+            ),
+        },
+    }
 
     return selected_obs, metadata
 

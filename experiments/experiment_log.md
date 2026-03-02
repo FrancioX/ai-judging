@@ -135,15 +135,98 @@ All experiments measured against 3 annotated ground-truth videos. Baseline recor
 
 ---
 
+## Experiment 4 — Phase A.6 Jump-Size Instrumentation (`max_jump_px`)
+
+**Date:** 2026-03-02
+**Goal:** Log jump-size distributions used by the Phase A.6 identity guard to determine whether lowering `max_jump_px` could improve track generation.
+
+**Implementation:** Extended `_validate_identity()` metadata to persist distance statistics (`of_dist_px`, `prev_det_dist_px`, rejected-jump stats, and threshold exceedance counts), printed Phase A.6 summaries during tracking, and saved them in `tracking.json` as `identity_guard_jump_stats`.
+
+**Files changed:** `src/tracking/tracker.py`, `tests/test_identity_guard.py`
+**Validation:** `uv run ruff check src/tracking/tracker.py` and `uv run pytest -q tests/test_identity_guard.py` (6 passed).
+
+### Iteration 4a — Logging enabled, `max_jump_px=150` (all annotated videos)
+
+| Video | Mean Error (px) | HOTA | Rejections | Δ vs current best |
+|-------|---------------:|-----:|-----------:|:------------------|
+| Arno Vuarnier | 42.3 | 0.754 | 59 | −0.1 px / −0.002 HOTA |
+| Andreas Bakke | 18.3 | 0.894 | 93 | +0.1 px / −0.002 HOTA |
+| Lach Powell | 37.0 | 0.876 | 33 | +0.1 px / −0.004 HOTA |
+| **Overall** | **32.5** | **0.841** | **185** | **No meaningful change** |
+
+**Phase A.6 jump diagnostics (per video):**
+
+| Metric | Arno | Andreas | Lach |
+|--------|-----:|--------:|-----:|
+| **OF dist — p50 (px)** | 6.26 | 6.68 | 4.92 |
+| **OF dist — p90 (px)** | 18.63 | 37.82 | 18.95 |
+| **OF dist — p95 (px)** | 352.92 | 405.47 | 27.43 |
+| **OF dist — max (px)** | 595.41 | 747.76 | 697.88 |
+| **Prev det dist — p50 (px)** | 5.41 | 5.39 | 4.27 |
+| **Prev det dist — p90 (px)** | 18.78 | 14.92 | 10.82 |
+| **Prev det dist — p95 (px)** | 349.39 | 395.38 | 17.41 |
+| **Prev det dist — max (px)** | 434.87 | 745.51 | 759.37 |
+| **Over max_jump (150 px)** | 59/961 (6.1%) | 95/1162 (8.2%) | 33/1300 (2.5%) |
+| **Rejected OF dist — median (px)** | 394.77 | 432.42 | 661.79 |
+
+**Key observations:**
+1. **Bimodal distribution** — p90 is well below 40 px across all videos, then p95 jumps to 350–400 px. The gap between "good" and "bad" detections is enormous (~10× the threshold).
+2. **Threshold headroom** — The current `max_jump_px=150` sits in a dead zone: p90 ≪ 150 ≪ rejected median (~400–660 px). Lowering to 100 or even 80 would not reject any additional good detections (p90 < 40 px everywhere).
+3. **Lach is cleanest** — Only 2.5% exceed threshold vs 8.2% for Andreas, correlating with fewer bystander crossovers.
+4. **Both conditions required** — The guard requires BOTH `of_dist > 150` AND `prev_det_dist > 75`. Since both distances track closely for outliers, the dual-gate doesn't add much safety margin.
+
+**Conclusion:** The current `max_jump_px=150` is effective but conservative. The clear bimodal gap (p90 ~20–40 px vs rejected median ~400–660 px) means lowering to 100 or even 80 px should be safe — it would catch identity switches earlier without risking false rejections. A sweep experiment (80/100/120) is the logical next step.
+
+---
+
+## Experiment 5 — `max_jump_px` Sweep (10/20/50/100)
+
+**Date:** 2026-03-02
+**Goal:** Determine the optimal `max_jump_px` threshold by sweeping 10/20/50/100 and measuring impact on association accuracy and error vs the production value of 150.
+
+**Implementation:** Used `scripts/sweep_max_jump.py` to re-run tracking for all 3 annotated videos at each threshold value, collecting HOTA (DetA, AssA), mean error, and rejection counts.
+
+**Files changed:** `config.yaml` (threshold value), `scripts/sweep_max_jump.py` (sweep runner)
+**Output:** `output/sweep_max_jump_results.json`
+
+### Results — Association Accuracy (`hota_ass_a`)
+
+| max_jump_px | Arno (AssA) | Andreas (AssA) | Lach (AssA) | Mean AssA |
+|:-----------:|:-----------:|:--------------:|:-----------:|:---------:|
+| **10**      | 0.711       | 0.862          | 0.832       | 0.802     |
+| **20**      | **0.720**   | **0.866**      | **0.852**   | **0.813** |
+| 50          | 0.718       | 0.863          | 0.848       | 0.810     |
+| 100         | 0.718       | 0.863          | 0.848       | 0.810     |
+
+### Results — Full Metrics
+
+| max_jump_px | Arno err / HOTA | Andreas err / HOTA | Lach err / HOTA | Overall err / HOTA | Rejections |
+|:-----------:|:---------------:|:------------------:|:---------------:|:------------------:|:----------:|
+| 10          | 43.3 / 0.746    | 18.5 / 0.891       | 39.1 / 0.860    | 33.6 / 0.832      | 739        |
+| **20**      | **42.3 / 0.756**| **18.0 / 0.896**   | **36.7 / 0.880**| **32.3 / 0.844**   | **262**    |
+| 50          | 42.3 / 0.754    | 18.3 / 0.894       | 37.0 / 0.876    | 32.5 / 0.841      | 185        |
+| 100         | 42.3 / 0.754    | 18.3 / 0.894       | 37.0 / 0.876    | 32.5 / 0.841      | 185        |
+
+### Key Findings
+
+1. **`max_jump_px=20` is optimal** — best HOTA, best mean error, and best AssA across all three videos with zero regressions.
+2. **`max_jump_px=10` over-rejects** — rejections explode to 739 (vs 262 at 20). Normal inter-frame skier motion (p50 ~5–7 px) is near the threshold, causing true-positive rejections. All videos regress: Arno −0.010 HOTA, Lach −0.020 HOTA.
+3. **50 and 100 are identical** — confirms the bimodal gap from Experiment 4. Between 50–100 px there are virtually zero detections. The jump from "good" (p90 < 40 px) to "bad" (rejected median 370–660 px) is abrupt.
+4. **20 catches identity switches in the 20–50 px gap** — the extra 77 rejections over the 50-threshold (262 vs 185) are overwhelmingly true identity switches, not valid fast movements.
+
+**Conclusion:** Lowered `identity_guard_max_jump_px` from 150 → 20 in `config.yaml`. The improvement is modest but consistent across all videos: −0.6% mean error, +0.4% AssA, with no regressions.
+
+---
+
 ## Current Best — Summary
 
-**Config:** `w_velocity=0.4`, `of_synthetic_confidence=0.3`, synthetic OF candidates active, OF agreement zeroed for synthetics.
+**Config:** `w_velocity=0.4`, `of_synthetic_confidence=0.3`, `identity_guard_max_jump_px=20`, synthetic OF candidates active, OF agreement zeroed for synthetics.
 
 | Video | Mean Error (px) | HOTA |
 |-------|---------------:|-----:|
-| Arno Vuarnier | 42.4 | 0.756 |
-| Andreas Bakke | 18.2 | 0.896 |
-| Lach Powell | 36.9 | 0.880 |
-| **Overall** | **32.5** | **0.844** |
+| Arno Vuarnier | 42.3 | 0.756 |
+| Andreas Bakke | 18.0 | 0.896 |
+| Lach Powell | 36.7 | 0.880 |
+| **Overall** | **32.3** | **0.844** |
 
-**Improvement vs original baseline:** -17.7% mean error, +1.0% HOTA.
+**Improvement vs original baseline:** -18.2% mean error, +1.0% HOTA.

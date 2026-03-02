@@ -54,6 +54,7 @@ _TRACE_LENGTH = 60
 _GREEN = (0, 220, 0)
 _RED = (0, 0, 220)
 _YELLOW = (0, 220, 220)
+_CYAN = (220, 180, 0)
 _WHITE = (255, 255, 255)
 _BG = (0, 0, 0)
 
@@ -97,6 +98,32 @@ def render_overlay(
     preds = _load_tracking_centers(tracking_dir)
     all_pred_ids = sorted(preds.keys())
     gt_dense = _interpolate_gt(gt_sparse, all_pred_ids)
+
+    # Load all YOLO person detections from segmentation manifest
+    seg_dir = _PROJECT_ROOT / "output" / "segmentation" / video_stem
+    seg_manifest_path = seg_dir / "segmentation.json"
+    # seg_persons[frame_filename_number] = list of {bbox, track_id, confidence}
+    seg_persons: dict[int, list[dict]] = {}
+    selected_track_ids: set[int] = set()
+    if seg_manifest_path.exists():
+        with open(seg_manifest_path) as f:
+            seg_data = json.load(f)
+        for entry in seg_data.get("frames", []):
+            frame_file = entry.get("frame_file", "")
+            try:
+                file_fid = int(Path(frame_file).stem.split("_")[-1])
+            except (ValueError, IndexError):
+                continue
+            persons = entry.get("persons", [])
+            if persons:
+                seg_persons[file_fid] = persons
+    # Load merged track IDs from tracking manifest to highlight selected track
+    manifest_path = tracking_dir / "tracking.json"
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            trk_data = json.load(f)
+        merged = trk_data.get("merged_tracks", [])
+        selected_track_ids = set(merged) if merged else set()
 
     # Discover frames
     frames_dir = _FRAMES_DIR / video_stem
@@ -171,6 +198,23 @@ def render_overlay(
             gt_trace.append((int(gt_pt[0]), int(gt_pt[1])))
         if pred_pt:
             pred_trace.append((int(pred_pt[0]), int(pred_pt[1])))
+
+        # --- Draw all YOLO person detections (from segmentation) ---
+        if fid in seg_persons:
+            for person in seg_persons[fid]:
+                x1, y1, x2, y2 = person["bbox"]
+                tid = person.get("track_id")
+                is_selected = tid in selected_track_ids
+                # Selected track = cyan, others = dim grey
+                color = _CYAN if is_selected else (100, 100, 100)
+                thickness = 2 if is_selected else 1
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+                # Label with track ID
+                label = f"T{tid}" if tid is not None else "?"
+                cv2.putText(
+                    img, label, (x1, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA,
+                )
 
         # --- Draw traces (fading trails) ---
         _draw_trace(img, gt_trace, _GREEN)
@@ -272,10 +316,14 @@ def _draw_hud(
     cv2.putText(img, "GT", (28, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, _GREEN, 1, cv2.LINE_AA)
     cv2.circle(img, (70, 18), 6, _RED, -1)
     cv2.putText(img, "Pred", (83, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, _RED, 1, cv2.LINE_AA)
+    cv2.rectangle(img, (130, 12), (146, 24), _CYAN, 2)
+    cv2.putText(img, "Sel", (152, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, _CYAN, 1, cv2.LINE_AA)
+    cv2.rectangle(img, (188, 12), (204, 24), (100, 100, 100), 1)
+    cv2.putText(img, "Other", (210, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 100, 100), 1, cv2.LINE_AA)
 
     # Frame number
     cv2.putText(
-        img, f"Frame {frame_id}", (140, 23),
+        img, f"Frame {frame_id}", (270, 23),
         cv2.FONT_HERSHEY_SIMPLEX, 0.55, _WHITE, 1, cv2.LINE_AA,
     )
 

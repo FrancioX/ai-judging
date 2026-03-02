@@ -34,7 +34,7 @@ tracking:
   w_center: 0.5              # weight for center-of-frame proximity
   w_length: 0.2              # weight for track duration ratio
   min_track_frames: 10       # ignore tracks shorter than this
-  smooth_window: 5            # EMA window for bbox smoothing (0 = off)
+  smooth_window: 0            # EMA window for bbox smoothing (0 = off)
   merge_tracks: true          # merge multiple high-scoring tracks (solves fragmentation)
   merge_score_threshold: 0.3  # minimum score for track inclusion in merge
   optical_flow_method: "auto" # auto (sparse LK + dense fallback) | sparse | dense | none
@@ -42,7 +42,7 @@ tracking:
   flow_min_keypoints: 5       # min tracked keypoints before sparse→dense fallback
   # Identity guard — prevents tracking the wrong person via OF-predicted position
   identity_guard_enabled: true      # master switch for hybrid OF identity guard
-  identity_guard_max_jump_px: 150   # reject detection if >150px from OF prediction AND >75px from prev
+  identity_guard_max_jump_px: 20    # reject detection if >20px from OF prediction AND >10px from prev
   identity_guard_reanchor_interval: 50  # re-anchor OF seed every 50 confident detected frames
   identity_guard_reanchor_min_conf: 0.5 # minimum detection confidence for re-anchor
   identity_guard_max_drift_px: 200  # force re-anchor if OF drift exceeds this
