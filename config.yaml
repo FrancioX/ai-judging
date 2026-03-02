@@ -34,7 +34,7 @@ tracking:
   w_center: 0.5              # weight for center-of-frame proximity
   w_length: 0.2              # weight for track duration ratio
   min_track_frames: 10       # ignore tracks shorter than this
-  smooth_window: 5            # EMA window for bbox smoothing (0 = off)
+  smooth_window: 0            # EMA window for bbox smoothing (0 = off)
   merge_tracks: true          # merge multiple high-scoring tracks (solves fragmentation)
   merge_score_threshold: 0.3  # minimum score for track inclusion in merge
   optical_flow_method: "auto" # auto (sparse LK + dense fallback) | sparse | dense | none

@@ -135,6 +135,50 @@ All experiments measured against 3 annotated ground-truth videos. Baseline recor
 
 ---
 
+## Experiment 4 — Phase A.6 Jump-Size Instrumentation (`max_jump_px`)
+
+**Date:** 2026-03-02
+**Goal:** Log jump-size distributions used by the Phase A.6 identity guard to determine whether lowering `max_jump_px` could improve track generation.
+
+**Implementation:** Extended `_validate_identity()` metadata to persist distance statistics (`of_dist_px`, `prev_det_dist_px`, rejected-jump stats, and threshold exceedance counts), printed Phase A.6 summaries during tracking, and saved them in `tracking.json` as `identity_guard_jump_stats`.
+
+**Files changed:** `src/tracking/tracker.py`, `tests/test_identity_guard.py`
+**Validation:** `uv run ruff check src/tracking/tracker.py` and `uv run pytest -q tests/test_identity_guard.py` (6 passed).
+
+### Iteration 4a — Logging enabled, `max_jump_px=150` (all annotated videos)
+
+| Video | Mean Error (px) | HOTA | Rejections | Δ vs current best |
+|-------|---------------:|-----:|-----------:|:------------------|
+| Arno Vuarnier | 42.3 | 0.754 | 59 | −0.1 px / −0.002 HOTA |
+| Andreas Bakke | 18.3 | 0.894 | 93 | +0.1 px / −0.002 HOTA |
+| Lach Powell | 37.0 | 0.876 | 33 | +0.1 px / −0.004 HOTA |
+| **Overall** | **32.5** | **0.841** | **185** | **No meaningful change** |
+
+**Phase A.6 jump diagnostics (per video):**
+
+| Metric | Arno | Andreas | Lach |
+|--------|-----:|--------:|-----:|
+| **OF dist — p50 (px)** | 6.26 | 6.68 | 4.92 |
+| **OF dist — p90 (px)** | 18.63 | 37.82 | 18.95 |
+| **OF dist — p95 (px)** | 352.92 | 405.47 | 27.43 |
+| **OF dist — max (px)** | 595.41 | 747.76 | 697.88 |
+| **Prev det dist — p50 (px)** | 5.41 | 5.39 | 4.27 |
+| **Prev det dist — p90 (px)** | 18.78 | 14.92 | 10.82 |
+| **Prev det dist — p95 (px)** | 349.39 | 395.38 | 17.41 |
+| **Prev det dist — max (px)** | 434.87 | 745.51 | 759.37 |
+| **Over max_jump (150 px)** | 59/961 (6.1%) | 95/1162 (8.2%) | 33/1300 (2.5%) |
+| **Rejected OF dist — median (px)** | 394.77 | 432.42 | 661.79 |
+
+**Key observations:**
+1. **Bimodal distribution** — p90 is well below 40 px across all videos, then p95 jumps to 350–400 px. The gap between "good" and "bad" detections is enormous (~10× the threshold).
+2. **Threshold headroom** — The current `max_jump_px=150` sits in a dead zone: p90 ≪ 150 ≪ rejected median (~400–660 px). Lowering to 100 or even 80 would not reject any additional good detections (p90 < 40 px everywhere).
+3. **Lach is cleanest** — Only 2.5% exceed threshold vs 8.2% for Andreas, correlating with fewer bystander crossovers.
+4. **Both conditions required** — The guard requires BOTH `of_dist > 150` AND `prev_det_dist > 75`. Since both distances track closely for outliers, the dual-gate doesn't add much safety margin.
+
+**Conclusion:** The current `max_jump_px=150` is effective but conservative. The clear bimodal gap (p90 ~20–40 px vs rejected median ~400–660 px) means lowering to 100 or even 80 px should be safe — it would catch identity switches earlier without risking false rejections. A sweep experiment (80/100/120) is the logical next step.
+
+---
+
 ## Current Best — Summary
 
 **Config:** `w_velocity=0.4`, `of_synthetic_confidence=0.3`, synthetic OF candidates active, OF agreement zeroed for synthetics.

@@ -299,6 +299,7 @@ def track_skier(
     # ------------------------------------------------------------------
     of_trace: dict[int, tuple[float, float]] = {}
     identity_rejections = 0
+    identity_jump_stats: dict[str, object] | None = None
 
     if identity_guard_enabled and use_flow:
         print(f"  Identity guard: enabled (max_jump={identity_guard_max_jump_px}px, "
@@ -318,11 +319,37 @@ def track_skier(
             max_jump_px=identity_guard_max_jump_px,
         )
         identity_rejections = identity_meta.get("rejections", 0)
+        raw_jump_stats = identity_meta.get("jump_stats")
+        if isinstance(raw_jump_stats, dict):
+            identity_jump_stats = raw_jump_stats
 
         if identity_rejections > 0:
             print(f"  → Identity guard: rejected {identity_rejections} detections")
+        if identity_jump_stats is not None:
+            of_stats = identity_jump_stats.get("of_dist_px")
+            if isinstance(of_stats, dict) and of_stats.get("count", 0) > 0:
+                over_max = int(identity_jump_stats.get("over_max_jump_count", 0))
+                print(
+                    "  → Identity jumps vs OF (px): "
+                    f"mean={of_stats['mean']}, p90={of_stats['p90']}, "
+                    f"max={of_stats['max']} "
+                    f"(>max_jump: {over_max}/{of_stats['count']})",
+                )
+            prev_stats = identity_jump_stats.get("prev_det_dist_px")
+            if isinstance(prev_stats, dict) and prev_stats.get("count", 0) > 0:
+                over_prev = int(identity_jump_stats.get("over_prev_jump_count", 0))
+                prev_threshold = identity_jump_stats.get(
+                    "prev_jump_threshold_px",
+                    round(identity_guard_max_jump_px * 0.5, 2),
+                )
+                print(
+                    "  → Identity jumps vs prev det (px): "
+                    f"mean={prev_stats['mean']}, p90={prev_stats['p90']}, "
+                    f"max={prev_stats['max']} "
+                    f"(>{prev_threshold}: {over_prev}/{prev_stats['count']})",
+                )
     elif identity_guard_enabled and not use_flow:
-        print(f"  ⚠ Identity guard enabled but optical flow disabled — skipping")
+        print("  ⚠ Identity guard enabled but optical flow disabled — skipping")
 
     # ------------------------------------------------------------------
     # Phase B — Assemble per-frame bboxes: detected → interpolated → extrapolated
@@ -473,6 +500,7 @@ def track_skier(
         "optical_flow_method_used": of_method_used if use_flow else "none",
         "identity_guard_enabled": identity_guard_enabled,
         "identity_guard_rejections": identity_rejections,
+        "identity_guard_jump_stats": identity_jump_stats,
         "velocity_stats": velocity_stats,
         "n_frames": n_frames,
         "frames": manifest_frames,
@@ -1890,7 +1918,7 @@ def _validate_identity(
     of_trace: dict[int, tuple[float, float]],
     *,
     max_jump_px: float = 150.0,
-) -> tuple[dict[int, dict], dict[str, int]]:
+) -> tuple[dict[int, dict], dict[str, object]]:
     """Validate detections against OF trace to reject identity switches (in-place).
 
     Compares each detection's center against the OF-predicted position. If a
@@ -1910,20 +1938,47 @@ def _validate_identity(
     -------
     Tuple of (updated selected_obs, metadata_dict) where metadata_dict contains:
         - "rejections": count of rejected detections
-        - "reanchor_count": number of re-anchors (informational)
+        - "jump_stats": summary stats for distances used by the guard
     """
+    def _distance_stats(values: list[float]) -> dict[str, float | int] | None:
+        if not values:
+            return None
+        sorted_vals = sorted(values)
+
+        def _quantile(q: float) -> float:
+            pos = (len(sorted_vals) - 1) * q
+            lo = int(math.floor(pos))
+            hi = int(math.ceil(pos))
+            if lo == hi:
+                return sorted_vals[lo]
+            weight = pos - lo
+            return sorted_vals[lo] * (1.0 - weight) + sorted_vals[hi] * weight
+
+        return {
+            "count": len(sorted_vals),
+            "mean": round(sum(sorted_vals) / len(sorted_vals), 2),
+            "p50": round(_quantile(0.5), 2),
+            "p90": round(_quantile(0.9), 2),
+            "p95": round(_quantile(0.95), 2),
+            "max": round(sorted_vals[-1], 2),
+        }
+
     if not of_trace:
-        return selected_obs, {"rejections": 0}
+        return selected_obs, {"rejections": 0, "jump_stats": None}
 
     sorted_fids = sorted(selected_obs.keys())
     if not sorted_fids:
-        return selected_obs, {"rejections": 0}
+        return selected_obs, {"rejections": 0, "jump_stats": None}
 
     rejections = 0
     in_wrong_identity_sequence = False
     prev_det_cx, prev_det_cy = None, None
 
     fids_to_reject: set[int] = set()
+    of_distances: list[float] = []
+    prev_det_distances: list[float] = []
+    rejected_of_distances: list[float] = []
+    rejected_prev_det_distances: list[float] = []
 
     for fid in sorted_fids:
         if fid not in of_trace:
@@ -1938,6 +1993,7 @@ def _validate_identity(
 
         # Distance from detection to OF prediction
         of_dist = math.sqrt((det_cx - of_cx) ** 2 + (det_cy - of_cy) ** 2)
+        of_distances.append(of_dist)
 
         # Distance from detection to previous detection
         prev_det_dist = float('inf')
@@ -1945,6 +2001,7 @@ def _validate_identity(
             prev_det_dist = math.sqrt(
                 (det_cx - prev_det_cx) ** 2 + (det_cy - prev_det_cy) ** 2
             )
+            prev_det_distances.append(prev_det_dist)
 
         # Check if this looks like an identity switch:
         # Large jump from OF AND large jump from previous detection
@@ -1960,6 +2017,9 @@ def _validate_identity(
 
             fids_to_reject.add(fid)
             rejections += 1
+            rejected_of_distances.append(of_dist)
+            if math.isfinite(prev_det_dist):
+                rejected_prev_det_distances.append(prev_det_dist)
         else:
             # Back to a good detection (close to OF or first frame)
             if in_wrong_identity_sequence:
@@ -1972,7 +2032,23 @@ def _validate_identity(
     for fid in fids_to_reject:
         del selected_obs[fid]
 
-    metadata = {"rejections": rejections}
+    metadata = {
+        "rejections": rejections,
+        "jump_stats": {
+            "max_jump_px": round(max_jump_px, 2),
+            "prev_jump_threshold_px": round(max_jump_px * 0.5, 2),
+            "of_dist_px": _distance_stats(of_distances),
+            "prev_det_dist_px": _distance_stats(prev_det_distances),
+            "rejected_of_dist_px": _distance_stats(rejected_of_distances),
+            "rejected_prev_det_dist_px": _distance_stats(
+                rejected_prev_det_distances,
+            ),
+            "over_max_jump_count": sum(1 for d in of_distances if d > max_jump_px),
+            "over_prev_jump_count": sum(
+                1 for d in prev_det_distances if d > max_jump_px * 0.5
+            ),
+        },
+    }
 
     return selected_obs, metadata
 

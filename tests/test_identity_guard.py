@@ -245,6 +245,7 @@ def test_validate_identity_reject_jump(dummy_seg_frames):
     # The frame at 50 should be rejected
     assert metadata["rejections"] > 0, "Jump should trigger rejection"
     assert 50 not in validated_obs, "Frame 50 should be removed"
+    assert metadata["jump_stats"]["over_max_jump_count"] > 0
 
 
 def test_validate_identity_legitimate_motion():
