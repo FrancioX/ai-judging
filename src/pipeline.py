@@ -482,8 +482,21 @@ def run_single_stage(
     print(f"{'='*60}\n")
 
 
-def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
-    """Execute the full 3D pose estimation pipeline on a single video."""
+def run_pipeline(
+    video_path: str | Path,
+    config: dict | None = None,
+    *,
+    stop_after: str | None = None,
+) -> None:
+    """Execute the pipeline on a single video, optionally stopping early.
+
+    Parameters
+    ----------
+    stop_after : str | None
+        Stop after this stage and skip the rest.  Accepted values:
+        ``"frames"``, ``"segmentation"``, ``"tracking"``.
+        ``None`` (default) runs the full pipeline.
+    """
     video_path = Path(video_path)
     if not video_path.exists():
         print(f"Error: video not found: {video_path}")
@@ -516,6 +529,9 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
         trim_start_seconds=fe_cfg.get("trim_start_seconds", 0),
         trim_end_seconds=fe_cfg.get("trim_end_seconds", 0),
     )
+    if stop_after == "frames":
+        print(f"\n✓ Stopped after frame extraction for {video_path.name}\n")
+        return
 
     # ── Step 2: Person Segmentation + Crop Extraction (YOLO-Seg) ────────
     seg_cfg = config.get("segmentation", {})
@@ -531,6 +547,9 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
         padding_ratio=seg_cfg.get("padding_ratio", 0.15),
         select_strategy=seg_cfg.get("select_strategy", "center"),
     )
+    if stop_after == "segmentation":
+        print(f"\n✓ Stopped after segmentation for {video_path.name}\n")
+        return
 
     # ── Step 3: Visualization (Pre-Tracking) ────────────────────────────
     viz_cfg = config.get("visualization", {})
@@ -541,10 +560,11 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
         cap = _cv2.VideoCapture(str(video_path))
         viz_fps = cap.get(_cv2.CAP_PROP_FPS)
         cap.release()
-    print(f"\n{'='*60}")
-    print(f"Step 3/6 — Visualization (Pre-Tracking) ({viz_fps:.2f} fps)")
-    print(f"{'='*60}")
-    visualize_segmentation_boxes(frame_dir, seg_manifest_path, viz_dir, fps=viz_fps)
+    if stop_after is None:
+        print(f"\n{'='*60}")
+        print(f"Step 3/6 — Visualization (Pre-Tracking) ({viz_fps:.2f} fps)")
+        print(f"{'='*60}")
+        visualize_segmentation_boxes(frame_dir, seg_manifest_path, viz_dir, fps=viz_fps)
 
     # ── Step 4: Temporal Tracking ───────────────────────────────────────
     trk_cfg = config.get("tracking", {})
@@ -584,6 +604,10 @@ def run_pipeline(video_path: str | Path, config: dict | None = None) -> None:
             cmc_ransac_threshold=trk_cfg.get("cmc_ransac_threshold", 3.0),
         )
         pose_manifest = track_manifest_path
+
+    if stop_after == "tracking":
+        print(f"\n✓ Stopped after tracking for {video_path.name}\n")
+        return
 
     # ── Step 5: 2D Pose Estimation ──────────────────────────────────────
     p2d_cfg = config.get("pose_2d", {})
@@ -677,6 +701,12 @@ def main():
         "--max-videos", "-n", type=int, default=None, help="Max number of videos to process (batch mode only)"
     )
     parser.add_argument(
+        "--stop-after",
+        choices=["frames", "segmentation", "tracking"],
+        default=None,
+        help="Stop the pipeline after this stage (skips pose estimation and visualization)",
+    )
+    parser.add_argument(
         "--test", "-t", action="store_true", help="Quick test mode: 5 fps, 50 frames max"
     )
     args = parser.parse_args()
@@ -702,8 +732,8 @@ def main():
     # ── Full Pipeline or Batch Mode ────────────────────────────────────
     else:
         if args.video:
-            # Single video, full pipeline
-            run_pipeline(args.video, config)
+            # Single video, full pipeline (or partial if --stop-after)
+            run_pipeline(args.video, config, stop_after=args.stop_after)
         else:
             # Batch: process all videos in raw_videos/
             raw_dir = Path(config.get("raw_videos_dir", "raw_videos"))
@@ -715,9 +745,10 @@ def main():
             if args.max_videos:
                 videos = videos[: args.max_videos]
 
-            print(f"Processing {len(videos)} videos from {raw_dir} (full pipeline)\n")
+            stage_label = f"up to {args.stop_after}" if args.stop_after else "full pipeline"
+            print(f"Processing {len(videos)} videos from {raw_dir} ({stage_label})\n")
             for video in videos:
-                run_pipeline(video, config)
+                run_pipeline(video, config, stop_after=args.stop_after)
 
 
 if __name__ == "__main__":
