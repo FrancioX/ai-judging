@@ -81,7 +81,7 @@ Pre-processed outputs for all stages are available in `output/`.
 
 ## Tracking Ground Truth
 
-Three videos have hand-annotated center-point annotations in `annotations/tracking/<video_stem>/gt_centers.csv` (format: `frame_id,track_id,center_x,center_y`; sparse ~every 10th frame, linearly interpolated during evaluation).
+Videos have hand-annotated center-point annotations in `annotations/tracking/<video_stem>/gt_centers.csv` (format: `frame_id,track_id,center_x,center_y`; sparse ~every 10th frame, linearly interpolated during evaluation).
 
 **After any tracking change**, evaluate against ground truth to catch regressions:
 
@@ -100,7 +100,7 @@ uv run python -m src.tracking.overlay_gt --batch
 # Output: output/tracking/<stem>/overlay_gt.mp4 — green=GT, red=predicted
 ```
 
-Current aggregate: **32.5px mean error, 0.844 HOTA** across the three annotated videos.
+Current aggregate: **32.5px mean error, 0.844 HOTA**.
 
 ## Experiment Logging
 
