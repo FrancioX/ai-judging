@@ -5,13 +5,19 @@ in each displayed frame.
 
 Controls
 --------
-- **Left-click**: mark skier center
-- **SPACE / RIGHT**: next frame
+- **Left-click**: mark skier center (overrides tracking suggestion)
+- **SPACE / RIGHT**: next frame (auto-accepts tracking suggestion if no manual annotation)
 - **LEFT**: previous frame
 - **s**: skip frame (no annotation)
 - **j / k**: jump forward / backward 10 frames
 - **u**: undo annotation on current frame
 - **q**: save and quit
+
+Tracking-assisted mode
+-----------------------
+Pass ``--tracking=<path_to_tracking.json>`` to pre-populate suggestions from
+tracking output. Suggestions are shown in **cyan**. Press SPACE to accept the
+suggestion, or click to override it.
 
 Sparse annotations (e.g. every 10th frame via ``--step``) are linearly
 interpolated during evaluation, so you don't need every frame.
@@ -24,11 +30,19 @@ Usage
         "output/frames/<video_stem>" \\
         "annotations/tracking/<video_stem>/gt_centers.csv" \\
         --step=10
+
+    # With tracking suggestions:
+    uv run python -m src.tracking.annotate_centers \\
+        "output/frames/<video_stem>" \\
+        "annotations/tracking/<video_stem>/gt_centers.csv" \\
+        --step=10 \\
+        --tracking="output/tracking/<video_stem>/tracking.json"
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -48,6 +62,61 @@ def _mouse_callback(event: int, x: int, y: int, _flags: int, _param: object) -> 
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_tracking_hints(tracking_json: Path) -> dict[int, tuple[float, float]]:
+    """Load per-frame center hints from a tracking manifest.
+
+    Parameters
+    ----------
+    tracking_json : Path
+        Path to ``tracking.json`` produced by :mod:`src.tracking.tracker`.
+
+    Returns
+    -------
+    dict[int, tuple[float, float]]
+        Mapping ``frame_id → (center_x, center_y)`` derived from bbox midpoints.
+    """
+    with open(tracking_json) as f:
+        data = json.load(f)
+
+    hints: dict[int, tuple[float, float]] = {}
+    for entry in data.get("frames", []):
+        fid = entry.get("frame_id")
+        bbox = entry.get("bbox")  # [x1, y1, x2, y2]
+        if fid is not None and bbox and len(bbox) == 4:
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+            hints[fid] = (cx, cy)
+    return hints
+
+
+def _draw_hint(display, cx: float, cy: float) -> None:
+    """Draw a cyan tracking suggestion marker."""
+    icx, icy = int(cx), int(cy)
+    cv2.circle(display, (icx, icy), 12, (255, 200, 0), 2)
+    cv2.circle(display, (icx, icy), 3, (255, 200, 0), -1)
+    cv2.line(display, (icx - 18, icy), (icx + 18, icy), (255, 200, 0), 1)
+    cv2.line(display, (icx, icy - 18), (icx, icy + 18), (255, 200, 0), 1)
+    cv2.putText(
+        display, "TRACK",
+        (icx + 14, icy - 14),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 0), 1,
+    )
+
+
+def _draw_annotation(display, cx: float, cy: float, accepted_from_track: bool = False) -> None:
+    """Draw a confirmed annotation marker (green, or teal if auto-accepted)."""
+    color = (0, 200, 100) if accepted_from_track else (0, 255, 0)
+    icx, icy = int(cx), int(cy)
+    cv2.circle(display, (icx, icy), 10, color, 2)
+    cv2.circle(display, (icx, icy), 2, color, -1)
+    cv2.line(display, (icx - 15, icy), (icx + 15, icy), color, 1)
+    cv2.line(display, (icx, icy - 15), (icx, icy + 15), color, 1)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -58,6 +127,7 @@ def annotate_video(
     track_id: int = 1,
     frame_step: int = 1,
     resume_csv: Path | None = None,
+    tracking_hints: dict[int, tuple[float, float]] | None = None,
 ) -> Path:
     """Open an interactive window to click-annotate skier center points.
 
@@ -74,6 +144,9 @@ def annotate_video(
         filled by linear interpolation during evaluation.
     resume_csv : Path | None
         Path to previously saved CSV to resume annotation from.
+    tracking_hints : dict[int, tuple[float, float]] | None
+        Optional pre-computed tracking center points keyed by frame_id.
+        Shown in cyan; pressing SPACE auto-accepts the suggestion.
 
     Returns
     -------
@@ -95,6 +168,9 @@ def annotate_video(
 
     # Load existing annotations if resuming
     annotations: dict[int, tuple[float, float]] = {}
+    # Track which annotations were auto-accepted from tracking (for display color)
+    auto_accepted: set[int] = set()
+
     if resume_csv and resume_csv.exists():
         with open(resume_csv) as f:
             reader = csv.reader(f)
@@ -105,6 +181,9 @@ def annotate_video(
                 annotations[fid] = (float(row[2]), float(row[3]))
         print(f"Resumed {len(annotations)} existing annotations from {resume_csv}")
 
+    has_hints = bool(tracking_hints)
+    hints = tracking_hints or {}
+
     # Build display list (every step-th frame)
     display_indices = list(range(0, len(frame_files), frame_step))
     total_display = len(display_indices)
@@ -114,11 +193,43 @@ def annotate_video(
     print(f"  Total frames: {len(frame_files)}")
     print(f"  Showing every {frame_step}th → {total_display} frames to annotate")
     print(f"  Output     : {output_csv}")
+    if has_hints:
+        hint_coverage = sum(1 for i in display_indices if _frame_id(frame_files[i]) in hints)
+        print(f"  Tracking hints: {len(hints)} frames ({hint_coverage}/{total_display} displayed frames covered)")
+        print(f"  Cyan dot = tracking suggestion  |  SPACE = accept suggestion")
     print(f"\nControls: click=mark  SPACE/→=next  ←=prev  s=skip  j/k=±10  u=undo  q=save+quit\n")
 
     cv2.namedWindow("Annotate Skier Center", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Annotate Skier Center", 1280, 720)
     cv2.setMouseCallback("Annotate Skier Center", _mouse_callback)
+
+    def _render_frame(img, frame_id: int, idx: int, status_msg: str, status_color=(0, 255, 255)):
+        """Build display frame with overlays and status bar."""
+        display = img.copy()
+        hint = hints.get(frame_id)
+
+        # Draw tracking hint (cyan) if present and frame not yet annotated
+        if hint and frame_id not in annotations:
+            _draw_hint(display, *hint)
+
+        # Draw confirmed annotation
+        if frame_id in annotations:
+            cx, cy = annotations[frame_id]
+            _draw_annotation(display, cx, cy, accepted_from_track=(frame_id in auto_accepted))
+            # Still show hint in background if it differs significantly from annotation
+            if hint:
+                hx, hy = hint
+                if abs(hx - cx) > 5 or abs(hy - cy) > 5:
+                    _draw_hint(display, hx, hy)
+
+        ann_status = "ANNOTATED" if frame_id in annotations else ("HINT" if hint else "---")
+        bar = (
+            f"Frame {frame_id}  [{idx + 1}/{total_display}]  "
+            f"Annotated: {len(annotations)}  |  {ann_status}  |  {status_msg}"
+        )
+        cv2.rectangle(display, (0, 0), (display.shape[1], 40), (0, 0, 0), -1)
+        cv2.putText(display, bar, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+        return display
 
     idx = 0
     while 0 <= idx < total_display:
@@ -131,64 +242,35 @@ def annotate_video(
             idx += 1
             continue
 
-        display = img.copy()
-
-        # Draw existing annotation (green circle + crosshair)
-        if frame_id in annotations:
-            cx, cy = annotations[frame_id]
-            icx, icy = int(cx), int(cy)
-            cv2.circle(display, (icx, icy), 10, (0, 255, 0), 2)
-            cv2.circle(display, (icx, icy), 2, (0, 255, 0), -1)
-            cv2.line(display, (icx - 15, icy), (icx + 15, icy), (0, 255, 0), 1)
-            cv2.line(display, (icx, icy - 15), (icx, icy + 15), (0, 255, 0), 1)
-
-        # Status bar
-        ann_status = "ANNOTATED" if frame_id in annotations else "---"
-        bar = (
-            f"Frame {frame_id}  [{idx + 1}/{total_display}]  "
-            f"Total annotated: {len(annotations)}  |  {ann_status}"
-        )
-        # Dark background for text
-        cv2.rectangle(display, (0, 0), (display.shape[1], 40), (0, 0, 0), -1)
-        cv2.putText(display, bar, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
+        hint = hints.get(frame_id)
+        display = _render_frame(img, frame_id, idx, "")
         cv2.imshow("Annotate Skier Center", display)
         _click_pos = None
 
         while True:
             key = cv2.waitKey(30) & 0xFF
 
-            # Handle click
+            # Handle click → manual annotation
             if _click_pos is not None:
                 cx, cy = _click_pos
                 annotations[frame_id] = (float(cx), float(cy))
+                auto_accepted.discard(frame_id)
                 _click_pos = None
-
-                # Redraw with new annotation
-                display = img.copy()
-                icx, icy = int(cx), int(cy)
-                cv2.circle(display, (icx, icy), 10, (0, 255, 0), 2)
-                cv2.circle(display, (icx, icy), 2, (0, 255, 0), -1)
-                cv2.line(display, (icx - 15, icy), (icx + 15, icy), (0, 255, 0), 1)
-                cv2.line(display, (icx, icy - 15), (icx, icy + 15), (0, 255, 0), 1)
-
-                bar = (
-                    f"Frame {frame_id}  [{idx + 1}/{total_display}]  "
-                    f"Total annotated: {len(annotations)}  |  MARKED ({cx:.0f}, {cy:.0f})"
-                )
-                cv2.rectangle(display, (0, 0), (display.shape[1], 40), (0, 0, 0), -1)
-                cv2.putText(display, bar, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                display = _render_frame(img, frame_id, idx, f"MARKED ({cx:.0f}, {cy:.0f})", (0, 255, 0))
                 cv2.imshow("Annotate Skier Center", display)
 
-            # SPACE or RIGHT → next
+            # SPACE or RIGHT → next (auto-accept hint if no annotation)
             if key == ord(" ") or key == 83 or key == 3:
+                if frame_id not in annotations and hint:
+                    annotations[frame_id] = hint
+                    auto_accepted.add(frame_id)
                 idx += 1
                 break
             # LEFT → previous
             if key == 81 or key == 2:
                 idx = max(0, idx - 1)
                 break
-            # 's' → skip
+            # 's' → skip (no annotation)
             if key == ord("s"):
                 idx += 1
                 break
@@ -203,14 +285,8 @@ def annotate_video(
             # 'u' → undo current frame
             if key == ord("u"):
                 annotations.pop(frame_id, None)
-                # Redraw without annotation
-                display = img.copy()
-                bar = (
-                    f"Frame {frame_id}  [{idx + 1}/{total_display}]  "
-                    f"Total annotated: {len(annotations)}  |  UNDONE"
-                )
-                cv2.rectangle(display, (0, 0), (display.shape[1], 40), (0, 0, 0), -1)
-                cv2.putText(display, bar, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                auto_accepted.discard(frame_id)
+                display = _render_frame(img, frame_id, idx, "UNDONE", (0, 0, 255))
                 cv2.imshow("Annotate Skier Center", display)
             # 'q' → save and quit
             if key == ord("q"):
@@ -260,8 +336,9 @@ if __name__ == "__main__":
         print("Usage: uv run python -m src.tracking.annotate_centers <frames_dir> <output_csv> [options]")
         print()
         print("Options:")
-        print("  --step=N        Annotate every N-th frame (default: 10)")
-        print("  --resume=<csv>  Resume from a previous annotation CSV")
+        print("  --step=N              Annotate every N-th frame (default: 10)")
+        print("  --resume=<csv>        Resume from a previous annotation CSV")
+        print("  --tracking=<json>     Load tracking suggestions from tracking.json")
         sys.exit(1)
 
     frames_dir = Path(sys.argv[1])
@@ -273,5 +350,11 @@ if __name__ == "__main__":
             kwargs["frame_step"] = int(arg.split("=")[1])
         elif arg.startswith("--resume="):
             kwargs["resume_csv"] = Path(arg.split("=", 1)[1])
+        elif arg.startswith("--tracking="):
+            tracking_path = Path(arg.split("=", 1)[1])
+            if not tracking_path.exists():
+                print(f"Warning: tracking file not found: {tracking_path}")
+            else:
+                kwargs["tracking_hints"] = _load_tracking_hints(tracking_path)
 
     annotate_video(frames_dir, output_csv, **kwargs)

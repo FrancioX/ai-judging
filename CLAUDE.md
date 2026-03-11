@@ -31,6 +31,9 @@ uv run python -m src.tracking.overlay_gt --batch
 
 # Annotate a new video for ground truth
 uv run python -m src.tracking.annotate_centers output/frames/<stem> annotations/tracking/<stem>/gt_centers.csv --step=10
+
+# Interactive review of tracker predictions (frame-by-frame inspection)
+uv run python -m src.tracking.review_tracks output/frames/<stem> output/tracking/<stem>/tracking.json
 ```
 
 ## Architecture

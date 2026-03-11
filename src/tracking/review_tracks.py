@@ -72,7 +72,13 @@ def _load_tracking(tracking_dir: Path) -> tuple[dict[int, tuple[float, float]], 
     interpolated: dict[int, bool] = {}
 
     for frame in data.get("frames", []):
-        fid = frame["frame_id"]
+        # frame_id is a sequential index (0, 1, 2…); the actual video frame
+        # number is encoded in frame_file (e.g. "frame_000150.jpg" → 150).
+        frame_file = frame.get("frame_file", "")
+        try:
+            fid = int(Path(frame_file).stem.split("_")[-1])
+        except (ValueError, IndexError):
+            fid = frame["frame_id"]
         bbox = frame.get("bbox")
         if bbox and len(bbox) == 4:
             x1, y1, x2, y2 = bbox
