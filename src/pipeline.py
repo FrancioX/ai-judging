@@ -592,6 +592,9 @@ def run_pipeline(
             cmc_exclude_margin=trk_cfg.get("cmc_exclude_margin", 1.5),
             cmc_min_features=trk_cfg.get("cmc_min_features", 20),
             cmc_ransac_threshold=trk_cfg.get("cmc_ransac_threshold", 3.0),
+            cotracker_enabled=trk_cfg.get("cotracker_enabled", False),
+            cotracker_min_gap=trk_cfg.get("cotracker_min_gap", 20),
+            cotracker_resize_h=trk_cfg.get("cotracker_resize_h", 320),
         )
         pose_manifest = track_manifest_path
 

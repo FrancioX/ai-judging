@@ -84,6 +84,9 @@ def track_skier(
     cmc_exclude_margin: float = 1.5,
     cmc_min_features: int = 20,
     cmc_ransac_threshold: float = 3.0,
+    cotracker_enabled: bool = False,
+    cotracker_min_gap: int = 20,
+    cotracker_resize_h: int = 320,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -550,6 +553,21 @@ def track_skier(
     assert len(frame_bboxes) == n_frames, (
         f"Full coverage failed: {len(frame_bboxes)}/{n_frames} frames have bboxes"
     )
+
+    # ------------------------------------------------------------------
+    # Phase B.1 — CoTracker3 long-gap re-fill (optional)
+    # ------------------------------------------------------------------
+    if cotracker_enabled:
+        from src.tracking.cotracker_fill import fill_long_gaps_cotracker, load_cotracker
+        ct_model = load_cotracker(device="cpu")
+        if ct_model is not None:
+            print(f"  CoTracker3: re-filling gaps >= {cotracker_min_gap} frames")
+            fill_long_gaps_cotracker(
+                frame_bboxes, img_w, img_h,
+                frame_dir, seg_frames, ct_model,
+                min_gap=cotracker_min_gap,
+                resize_h=cotracker_resize_h,
+            )
 
     # ------------------------------------------------------------------
     # Phase C — Temporal bbox smoothing
