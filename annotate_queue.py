@@ -1,7 +1,8 @@
 """Annotate all tracked videos that don't yet have ground-truth annotations.
 
 Iterates through output/tracking/ in order, skipping stems that already have
-annotations/tracking/<stem>/gt_centers.csv, and opens review_tracks for each.
+annotations/tracking/<stem>/gt_centers.csv, and opens annotate_centers in from-track
+mode for each.
 
 Usage
 -----
@@ -30,7 +31,7 @@ for arg in sys.argv[1:]:
     elif arg.startswith("--track-id="):
         kwargs["track_id"] = int(arg.split("=")[1])
 
-from src.tracking.review_tracks import review_tracks  # noqa: E402
+from src.tracking.annotate_centers import annotate_video  # noqa: E402
 
 stems = sorted(p.name for p in TRACKING_OUT.iterdir() if p.is_dir())
 todo = [s for s in stems if not (ANNOTATIONS / s / "gt_centers.csv").exists()]
@@ -53,7 +54,8 @@ for i, stem in enumerate(todo, 1):
     print(f"{'='*70}")
 
     try:
-        review_tracks(tracking_dir, output_csv, **kwargs)
+        frames_dir = tracking_dir.parent.parent / "frames" / tracking_dir.name
+        annotate_video(frames_dir, output_csv, from_track=tracking_dir, **kwargs)
     except FileNotFoundError as e:
         print(f"  SKIP — {e}")
         continue

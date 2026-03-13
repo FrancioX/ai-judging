@@ -34,15 +34,30 @@ tracking:
   w_center: 0.5              # weight for center-of-frame proximity
   w_length: 0.2              # weight for track duration ratio
   min_track_frames: 10       # ignore tracks shorter than this
-  smooth_window: 0            # EMA window for bbox smoothing (0 = off)
+  smooth_window: 5            # EMA window for bbox smoothing (0 = off)
   merge_tracks: true          # merge multiple high-scoring tracks (solves fragmentation)
-  merge_score_threshold: 0.3  # minimum score for track inclusion in merge
+  merge_score_threshold: 0.6  # minimum score for track inclusion in merge
+  merge_min_detection_conf: 0.0  # minimum per-detection confidence to enter the merge candidate pool
+  # Adaptive threshold: auto-selects between merge_threshold_low and merge_threshold_high
+  # based on temporal overlap of swing tracks with the best track.
+  # Non-overlapping swing tracks = skier fragments → use low threshold.
+  merge_threshold_adaptive: true
+  merge_threshold_low: 0.5
+  merge_threshold_high: 0.6
+  merge_threshold_min_overlap_ratio: 0.55  # det_rate(high/n_frames) < this → skier fragments cut → use low threshold
+  w_continuity: 0.6           # weight for spatial continuity during merge conflict resolution
+  w_track_stickiness: 0.4     # bonus for staying on the same ByteTrack ID during conflicts
   optical_flow_method: "auto" # auto (sparse LK + dense fallback) | sparse | dense | none
+  of_gap_fill_enabled: true   # when false: OF trace still runs for Phase A merge scoring, but Phase B gap-fill uses linear interpolation
+  of_min_gap_for_fill: 10     # gaps shorter than this use linear interpolation instead of OF (0 = always use OF)
+  of_drift_guard_px: 200.0    # if OF result drifts >N px from linear interpolation, fall back to linear (0 = disabled)
+  of_reanchor_min_conf: 0.0   # min detection confidence for OF trace re-anchoring in Phase A multi-candidate mode (0 = no filter)
+  of_trace_filter_enabled: false  # when false: Phase A OF trace used only as soft score signal — hard proximity gate disabled
   flow_max_extrapolate_frames: 30  # max frames to extrapolate via OF for leading/trailing gaps
   flow_min_keypoints: 5       # min tracked keypoints before sparse→dense fallback
   # Identity guard — prevents tracking the wrong person via OF-predicted position
-  identity_guard_enabled: true      # master switch for hybrid OF identity guard
-  identity_guard_max_jump_px: 150   # reject detection if >150px from OF prediction AND >75px from prev
+  identity_guard_enabled: false     # master switch for hybrid OF identity guard
+  identity_guard_max_jump_px: 100   # in no-OF mode, reject detection if >100px from previous detection
   identity_guard_reanchor_interval: 50  # re-anchor OF seed every 50 confident detected frames
   identity_guard_reanchor_min_conf: 0.5 # minimum detection confidence for re-anchor
   identity_guard_max_drift_px: 200  # force re-anchor if OF drift exceeds this

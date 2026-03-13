@@ -56,6 +56,18 @@ def track_skier(
     padding_ratio: float = 0.15,
     merge_tracks: bool = True,
     merge_score_threshold: float = 0.3,
+    merge_min_detection_conf: float = 0.0,
+    merge_threshold_adaptive: bool = False,
+    merge_threshold_low: float = 0.5,
+    merge_threshold_high: float = 0.6,
+    merge_threshold_min_overlap_ratio: float = 0.3,
+    of_gap_fill_enabled: bool = True,
+    of_min_gap_for_fill: int = 0,
+    of_drift_guard_px: float = 0.0,
+    of_reanchor_min_conf: float = 0.0,
+    of_trace_filter_enabled: bool = True,
+    w_continuity: float = 0.6,
+    w_track_stickiness: float = 0.4,
     optical_flow_method: str = "auto",
     flow_max_extrapolate_frames: int = 30,
     flow_min_keypoints: int = 5,
@@ -221,6 +233,24 @@ def track_skier(
     # Sort by score descending
     track_scores.sort(key=lambda x: x[1], reverse=True)
 
+    # Adaptive threshold: choose between merge_threshold_low and merge_threshold_high
+    # based on the detection rate at the high threshold (dets_high / n_frames).
+    # If too few frames have a detection at the high threshold, the skier's track is
+    # fragmented and some fragments are being excluded → use the low threshold.
+    # If the detection rate is healthy, the high threshold is correctly cutting bystanders.
+    if merge_threshold_adaptive and merge_tracks:
+        _dets_high = sum(cnt for _, sc, cnt in track_scores if sc >= merge_threshold_high)
+        _det_rate_high = _dets_high / max(n_frames, 1)
+        _use_low = _det_rate_high < merge_threshold_min_overlap_ratio
+        print(
+            f"  Adaptive threshold: det_rate@high={_det_rate_high:.3f} "
+            f"(dets={_dets_high}/{n_frames}, "
+            f"min={merge_threshold_min_overlap_ratio}) "
+            f"→ {'low' if _use_low else 'high'} threshold "
+            f"({merge_threshold_low if _use_low else merge_threshold_high})"
+        )
+        merge_score_threshold = merge_threshold_low if _use_low else merge_threshold_high
+
     # Select track(s) based on merge strategy
     if merge_tracks:
         # Select all tracks that meet the score threshold
@@ -228,7 +258,8 @@ def track_skier(
             tid for tid, score, _ in track_scores
             if score >= merge_score_threshold
         ]
-        if not selected_tracks:
+        _used_fallback = not selected_tracks
+        if _used_fallback:
             # Fallback: use the best track even if below threshold
             selected_tracks = [track_scores[0][0]]
 
@@ -242,8 +273,54 @@ def track_skier(
         frame_candidates: dict[int, list[dict]] = {}
         for tid in selected_tracks:
             for o in tracks[tid]:
+                if o["confidence"] < merge_min_detection_conf:
+                    continue
                 fid = o["frame_id"]
                 frame_candidates.setdefault(fid, []).append(o)
+
+        # --- Candidate-pool diagnostics ---
+        _cand_counts = [len(cands) for cands in frame_candidates.values()]
+        _cand_confs = [o["confidence"] for cands in frame_candidates.values() for o in cands]
+        _multi_frames = sum(1 for c in _cand_counts if c > 1)
+        _sens_zone = 0.05
+        _excl = [
+            {"track_id": tid, "score": round(sc, 4), "n_detections": cnt}
+            for tid, sc, cnt in track_scores
+            if sc < merge_score_threshold and not _used_fallback
+        ]
+        _incl = [
+            {"track_id": tid, "score": round(sc, 4), "n_detections": cnt}
+            for tid, sc, cnt in track_scores
+            if sc >= merge_score_threshold or (tid in selected_tracks and _used_fallback)
+        ]
+        _near_boundary = [
+            {
+                "track_id": tid,
+                "score": round(sc, 4),
+                "n_detections": cnt,
+                "side": "included" if sc >= merge_score_threshold else "excluded",
+            }
+            for tid, sc, cnt in track_scores
+            if abs(sc - merge_score_threshold) <= _sens_zone
+        ]
+        candidate_pool_stats = {
+            "threshold_used": merge_score_threshold,
+            "threshold_fallback": _used_fallback,
+            "merged_track_count": len(selected_tracks),
+            "excluded_track_count": len(_excl),
+            "frames_with_detections": len(frame_candidates),
+            "total_candidates": sum(_cand_counts),
+            "avg_candidates_per_frame": round(sum(_cand_counts) / max(len(_cand_counts), 1), 2),
+            "multi_candidate_frames": _multi_frames,
+            "multi_candidate_ratio": round(_multi_frames / max(len(_cand_counts), 1), 3),
+            "confidence_mean": round(sum(_cand_confs) / max(len(_cand_confs), 1), 3),
+            "confidence_min": round(min(_cand_confs), 3) if _cand_confs else 0.0,
+            "confidence_max": round(max(_cand_confs), 3) if _cand_confs else 0.0,
+            "tracks_included": _incl,
+            "tracks_excluded": _excl,
+            "threshold_sensitivity_tracks": _near_boundary,
+        }
+        del _cand_counts, _cand_confs, _multi_frames, _sens_zone, _excl, _incl, _near_boundary
 
         # Build a preliminary OF trace using ALL candidates for re-anchoring.
         # Unlike single-track seeding, this follows the skier across track
@@ -269,12 +346,15 @@ def track_skier(
                 min_keypoints=flow_min_keypoints,
                 max_reanchor_dist_px=150.0,
                 reanchor_interval=5,
+                reanchor_min_conf=of_reanchor_min_conf,
                 max_drift_px=150.0,
             )
             print(f"  → OF trace: {len(preliminary_of_trace)} frames")
 
-        selected_obs = _resolve_merge_conflicts(
+        selected_obs, conflict_stats = _resolve_merge_conflicts(
             frame_candidates, cx, cy, max_dist, w_conf, w_center,
+            w_continuity=w_continuity,
+            w_track_stickiness=w_track_stickiness,
             w_velocity=w_velocity,
             vel_history_len=vel_history_len,
             of_synthetic_confidence=of_synthetic_confidence,
@@ -283,6 +363,30 @@ def track_skier(
             optical_flow_method=optical_flow_method,
             flow_min_keypoints=flow_min_keypoints,
             of_trace=preliminary_of_trace or None,
+            of_trace_filter_enabled=of_trace_filter_enabled,
+        )
+        candidate_pool_stats["conflict_summary"] = conflict_stats
+
+        # Print diagnostics summary
+        _ncl = candidate_pool_stats["merged_track_count"]
+        _nex = candidate_pool_stats["excluded_track_count"]
+        _thr = candidate_pool_stats["threshold_used"]
+        _near = candidate_pool_stats["threshold_sensitivity_tracks"]
+        _cf = conflict_stats["conflict_frames"]
+        _margin = conflict_stats["avg_score_margin"]
+        print(
+            f"  Candidate pool: {_ncl} track(s) included, {_nex} excluded "
+            f"(threshold={_thr})"
+        )
+        if _near:
+            _near_str = ", ".join(
+                f"track {t['track_id']} score={t['score']} ({t['side']})"
+                for t in _near
+            )
+            print(f"  Near-boundary tracks: {_near_str}")
+        print(
+            f"  Conflicts: {_cf} frame(s)"
+            + (f", avg score margin={_margin:.4f}" if _margin is not None else "")
         )
 
         # Store metadata for manifest (use top track as representative)
@@ -292,6 +396,7 @@ def track_skier(
         # Single track selection (original behavior)
         best_tid, best_score, best_count = track_scores[0]
         selected_obs = {o["frame_id"]: o for o in tracks[best_tid]}
+        candidate_pool_stats = None
         print(f"  → Selected track {best_tid} "
               f"({best_count} detections, score={best_score:.3f})")
 
@@ -361,9 +466,34 @@ def track_skier(
                     f"(>{prev_threshold}: {over_prev}/{prev_stats['count']})",
                 )
     elif identity_guard_enabled and not use_flow:
-        print("  ⚠ Identity guard enabled but optical flow disabled — skipping")
-    elif identity_guard_enabled and not use_flow:
-        print("  ⚠ Identity guard enabled but optical flow disabled — skipping")
+        print(f"  Identity guard: enabled (no OF, prev-det max_jump={identity_guard_max_jump_px}px)")
+        selected_obs, identity_meta = _validate_identity(
+            selected_obs,
+            None,
+            max_jump_px=identity_guard_max_jump_px,
+            use_prev_only=True,
+        )
+        identity_rejections = identity_meta.get("rejections", 0)
+        raw_jump_stats = identity_meta.get("jump_stats")
+        if isinstance(raw_jump_stats, dict):
+            identity_jump_stats = raw_jump_stats
+
+        if identity_rejections > 0:
+            print(f"  → Identity guard: rejected {identity_rejections} detections")
+        if identity_jump_stats is not None:
+            prev_stats = identity_jump_stats.get("prev_det_dist_px")
+            if isinstance(prev_stats, dict) and prev_stats.get("count", 0) > 0:
+                over_prev = int(identity_jump_stats.get("over_prev_jump_count", 0))
+                prev_threshold = identity_jump_stats.get(
+                    "prev_jump_threshold_px",
+                    round(identity_guard_max_jump_px, 2),
+                )
+                print(
+                    "  → Identity jumps vs prev det (px): "
+                    f"mean={prev_stats['mean']}, p90={prev_stats['p90']}, "
+                    f"max={prev_stats['max']} "
+                    f"(>{prev_threshold}: {over_prev}/{prev_stats['count']})",
+                )
 
     # ------------------------------------------------------------------
     # Phase B — Assemble per-frame bboxes: detected → interpolated → extrapolated
@@ -389,7 +519,7 @@ def track_skier(
     flow_velocities: dict[int, tuple[float, float]] = {}
     of_method_used = "none"
 
-    if use_flow:
+    if use_flow and of_gap_fill_enabled:
         print(f"  Optical flow: {optical_flow_method} "
               f"(min_kp={flow_min_keypoints}, max_extrap={flow_max_extrapolate_frames})")
         if cmc_enabled:
@@ -402,6 +532,8 @@ def track_skier(
             method=optical_flow_method,
             min_keypoints=flow_min_keypoints,
             max_extrapolate=flow_max_extrapolate_frames,
+            min_gap_for_of=of_min_gap_for_fill,
+            of_drift_guard_px=of_drift_guard_px,
             cmc_enabled=cmc_enabled,
             cmc_method=cmc_method,
             cmc_exclude_margin=cmc_exclude_margin,
@@ -409,7 +541,9 @@ def track_skier(
             cmc_ransac_threshold=cmc_ransac_threshold,
         )
     else:
-        if optical_flow_method != "none":
+        if use_flow and not of_gap_fill_enabled:
+            print("  Optical flow gap-fill: disabled — using linear interpolation")
+        elif optical_flow_method != "none":
             print("  ⚠ numpy not available — falling back to linear interpolation")
         _fill_gaps(frame_bboxes, n_frames, img_w, img_h)
 
@@ -452,6 +586,8 @@ def track_skier(
         if img is None:
             continue
         crop = img[py1:py2, px1:px2]
+        if crop.size == 0:
+            crop = img  # fallback: use full frame to avoid imwrite crash
         crop_name = f"crop_{idx:06d}.jpg"
         cv2.imwrite(str(crop_dir / crop_name), crop)
 
@@ -517,6 +653,7 @@ def track_skier(
         "identity_guard_rejections": identity_rejections,
         "identity_guard_jump_stats": identity_jump_stats,
         "velocity_stats": velocity_stats,
+        "candidate_pool_stats": candidate_pool_stats,
         "n_frames": n_frames,
         "frames": manifest_frames,
     }
@@ -639,6 +776,7 @@ def _resolve_merge_conflicts(
     optical_flow_method: str = "auto",
     flow_min_keypoints: int = 5,
     of_trace: dict[int, tuple[float, float]] | None = None,
+    of_trace_filter_enabled: bool = True,
 ) -> dict[int, dict]:
     """Pick one detection per frame using optical-flow continuity and track-ID stickiness.
 
@@ -686,15 +824,15 @@ def _resolve_merge_conflicts(
 
     Returns
     -------
-    dict mapping ``frame_id`` → chosen observation.
+    tuple of (dict mapping ``frame_id`` → chosen observation, conflict_stats dict).
     """
     sorted_fids = sorted(frame_candidates)
 
     # Helper: score one direction (forward or backward)
     def _score_pass(
         fid_order: list[int],
-    ) -> dict[int, dict]:
-        """Run a single-direction pass, returning {fid: best_det}."""
+    ) -> tuple[dict[int, dict], dict]:
+        """Run a single-direction pass, returning ({fid: best_det}, conflict_stats)."""
         pass_result: dict[int, dict] = {}
         p_bbox: list[int] | None = None
         p_fid: int | None = None
@@ -702,13 +840,18 @@ def _resolve_merge_conflicts(
         vel_history: collections.deque[tuple[float, float]] = collections.deque(
             maxlen=vel_history_len,
         )
+        _conflict_count = 0
+        _score_margins: list[float] = []
+        _of_available_in_conflict = 0
 
         for fid in fid_order:
             candidates = frame_candidates[fid]
 
             # Filter candidates against OF trace: reject detections far
             # from the OF prediction (likely wrong person).
-            if of_trace is not None and fid in of_trace:
+            # Gated by of_trace_filter_enabled — when False, trace is used
+            # only for the OF agreement score term (soft signal, no hard gate).
+            if of_trace_filter_enabled and of_trace is not None and fid in of_trace:
                 of_cx, of_cy = of_trace[fid]
                 near_of = []
                 for det in candidates:
@@ -770,12 +913,17 @@ def _resolve_merge_conflicts(
 
                 best_obs = None
                 best_score = -1.0
+                second_best_score = -1.0
 
                 # Measure spread to detect genuine conflicts
                 cxs = [(d["bbox"][0] + d["bbox"][2]) / 2 for d in candidates]
                 cys = [(d["bbox"][1] + d["bbox"][3]) / 2 for d in candidates]
                 spread = max(max(cxs) - min(cxs), max(cys) - min(cys))
                 is_conflict = spread > 100.0
+                if is_conflict:
+                    _conflict_count += 1
+                    if of_pred_cx is not None:
+                        _of_available_in_conflict += 1
 
                 for det in candidates:
                     quality = _score_detection(
@@ -849,8 +997,14 @@ def _resolve_merge_conflicts(
                         + w_velocity * vel_score
                     )
                     if combined > best_score:
+                        second_best_score = best_score
                         best_score = combined
                         best_obs = det
+                    elif combined > second_best_score:
+                        second_best_score = combined
+
+                if is_conflict and second_best_score > -1.0:
+                    _score_margins.append(best_score - second_best_score)
 
                 pass_result[fid] = best_obs  # type: ignore[assignment]
 
@@ -868,12 +1022,21 @@ def _resolve_merge_conflicts(
                 p_track_id = chosen.get("track_id")
                 p_fid = fid
 
-        return pass_result
+        _avg_margin = (
+            round(sum(_score_margins) / len(_score_margins), 4)
+            if _score_margins else None
+        )
+        _pass_conflict_stats = {
+            "conflict_frames": _conflict_count,
+            "avg_score_margin": _avg_margin,
+            "of_available_in_conflict": _of_available_in_conflict,
+        }
+        return pass_result, _pass_conflict_stats
 
     # Forward pass only (bidirectional caused regressions on good videos)
-    selected_obs = _score_pass(sorted_fids)
+    selected_obs, conflict_stats = _score_pass(sorted_fids)
 
-    return selected_obs
+    return selected_obs, conflict_stats
 
 
 # ---------------------------------------------------------------------------
@@ -1280,6 +1443,8 @@ def _fill_gaps_optical_flow(
     method: str = "auto",
     min_keypoints: int = 5,
     max_extrapolate: int = 30,
+    min_gap_for_of: int = 0,
+    of_drift_guard_px: float = 0.0,
     cmc_enabled: bool = True,
     cmc_method: str = "orb",
     cmc_exclude_margin: float = 1.5,
@@ -1415,6 +1580,26 @@ def _fill_gaps_optical_flow(
         a_box = frame_bboxes[a_id]["bbox"]
         b_box = frame_bboxes[b_id]["bbox"]
 
+        # Small gaps: skip OF and use linear interpolation directly
+        if min_gap_for_of > 0 and gap_len < min_gap_for_of:
+            for fid in range(a_id + 1, b_id):
+                t = (fid - a_id) / (b_id - a_id)
+                interp = [
+                    int(round(a_box[j] + t * (b_box[j] - a_box[j])))
+                    for j in range(4)
+                ]
+                interp[0] = max(0, min(interp[0], img_w - 1))
+                interp[1] = max(0, min(interp[1], img_h - 1))
+                interp[2] = max(interp[0] + 1, min(interp[2], img_w))
+                interp[3] = max(interp[1] + 1, min(interp[3], img_h))
+                frame_bboxes[fid] = {
+                    "bbox": interp,
+                    "confidence": 0.0,
+                    "detected": False,
+                    "interpolated": True,
+                }
+            continue
+
         # Forward propagation from anchor a
         fwd_bboxes: dict[int, list[int]] = {}
         fwd_vel: dict[int, tuple[float, float]] = {}
@@ -1468,8 +1653,27 @@ def _fill_gaps_optical_flow(
             blended[2] = max(blended[0] + 1, min(blended[2], img_w))
             blended[3] = max(blended[1] + 1, min(blended[3], img_h))
 
+            # Drift guard: if OF result is far from linear interpolation, fall back
+            final_bbox = blended
+            if of_drift_guard_px > 0:
+                interp_cx = a_box[0] + t * (b_box[0] - a_box[0]) + (a_box[2] - a_box[0]) / 2
+                interp_cy = a_box[1] + t * (b_box[1] - a_box[1]) + (a_box[3] - a_box[1]) / 2
+                of_cx = (blended[0] + blended[2]) / 2
+                of_cy = (blended[1] + blended[3]) / 2
+                drift = math.sqrt((of_cx - interp_cx) ** 2 + (of_cy - interp_cy) ** 2)
+                if drift > of_drift_guard_px:
+                    interp = [
+                        int(round(a_box[j] + t * (b_box[j] - a_box[j])))
+                        for j in range(4)
+                    ]
+                    interp[0] = max(0, min(interp[0], img_w - 1))
+                    interp[1] = max(0, min(interp[1], img_h - 1))
+                    interp[2] = max(interp[0] + 1, min(interp[2], img_w))
+                    interp[3] = max(interp[1] + 1, min(interp[3], img_h))
+                    final_bbox = interp
+
             frame_bboxes[fid] = {
-                "bbox": blended,
+                "bbox": final_bbox,
                 "confidence": 0.0,
                 "detected": False,
                 "interpolated": True,
@@ -1667,12 +1871,15 @@ def _build_of_trace(
     ) -> tuple[float, float, float] | None:
         """Find the candidate detection closest to (pred_cx, pred_cy) [multi-candidate mode].
 
-        Returns (cx, cy, dist) or None if no candidates in this frame.
+        Only considers candidates with confidence >= reanchor_min_conf (when > 0).
+        Returns (cx, cy, dist) or None if no qualifying candidates in this frame.
         """
         if not use_candidates or fid not in frame_candidates:
             return None
         best_cx, best_cy, best_dist = 0.0, 0.0, float("inf")
         for det in frame_candidates[fid]:
+            if reanchor_min_conf > 0.0 and det.get("confidence", 0.0) < reanchor_min_conf:
+                continue
             bbox = det["bbox"]
             dcx = (bbox[0] + bbox[2]) / 2.0
             dcy = (bbox[1] + bbox[3]) / 2.0
@@ -1680,6 +1887,8 @@ def _build_of_trace(
             if d < best_dist:
                 best_dist = d
                 best_cx, best_cy = dcx, dcy
+        if best_dist == float("inf"):
+            return None
         return (best_cx, best_cy, best_dist)
 
     # --- Forward trace ---
@@ -1788,9 +1997,10 @@ def _build_of_trace(
 
 def _validate_identity(
     selected_obs: dict[int, dict],
-    of_trace: dict[int, tuple[float, float]],
+    of_trace: dict[int, tuple[float, float]] | None,
     *,
     max_jump_px: float = 150.0,
+    use_prev_only: bool = False,
 ) -> tuple[dict[int, dict], dict[str, object]]:
     """Validate detections against OF trace to reject identity switches (in-place).
 
@@ -1836,9 +2046,6 @@ def _validate_identity(
             "max": round(sorted_vals[-1], 2),
         }
 
-    if not of_trace:
-        return selected_obs, {"rejections": 0, "jump_stats": None}
-
     sorted_fids = sorted(selected_obs.keys())
     if not sorted_fids:
         return selected_obs, {"rejections": 0, "jump_stats": None}
@@ -1852,6 +2059,58 @@ def _validate_identity(
     prev_det_distances: list[float] = []
     rejected_of_distances: list[float] = []
     rejected_prev_det_distances: list[float] = []
+
+    if use_prev_only:
+        for fid in sorted_fids:
+            det = selected_obs[fid]
+            det_bbox = det["bbox"]
+            det_cx = (det_bbox[0] + det_bbox[2]) / 2.0
+            det_cy = (det_bbox[1] + det_bbox[3]) / 2.0
+
+            if prev_det_cx is None:
+                prev_det_cx = det_cx
+                prev_det_cy = det_cy
+                continue
+
+            prev_det_dist = math.sqrt(
+                (det_cx - prev_det_cx) ** 2 + (det_cy - prev_det_cy) ** 2,
+            )
+            prev_det_distances.append(prev_det_dist)
+
+            likely_switch = prev_det_dist > max_jump_px
+
+            if likely_switch:
+                fids_to_reject.add(fid)
+                rejections += 1
+                rejected_prev_det_distances.append(prev_det_dist)
+            else:
+                prev_det_cx = det_cx
+                prev_det_cy = det_cy
+
+        for fid in fids_to_reject:
+            del selected_obs[fid]
+
+        metadata = {
+            "rejections": rejections,
+            "jump_stats": {
+                "max_jump_px": round(max_jump_px, 2),
+                "prev_jump_threshold_px": round(max_jump_px, 2),
+                "of_dist_px": None,
+                "prev_det_dist_px": _distance_stats(prev_det_distances),
+                "rejected_of_dist_px": None,
+                "rejected_prev_det_dist_px": _distance_stats(
+                    rejected_prev_det_distances,
+                ),
+                "over_max_jump_count": 0,
+                "over_prev_jump_count": sum(
+                    1 for d in prev_det_distances if d > max_jump_px
+                ),
+            },
+        }
+        return selected_obs, metadata
+
+    if not of_trace:
+        return selected_obs, {"rejections": 0, "jump_stats": None}
 
     for fid in sorted_fids:
         if fid not in of_trace:

@@ -29,11 +29,11 @@ uv run ruff check src/
 uv run python -m src.tracking.evaluate --batch
 uv run python -m src.tracking.overlay_gt --batch
 
-# Annotate a new video for ground truth
+# Annotate ground truth — from scratch
 uv run python -m src.tracking.annotate_centers output/frames/<stem> annotations/tracking/<stem>/gt_centers.csv --step=10
 
-# Interactive review of tracker predictions (frame-by-frame inspection)
-uv run python -m src.tracking.review_tracks output/frames/<stem> output/tracking/<stem>/tracking.json
+# Annotate ground truth — review/correct existing tracker output
+uv run python -m src.tracking.annotate_centers output/frames/<stem> annotations/tracking/<stem>/gt_centers.csv --from-track=output/tracking/<stem>
 ```
 
 ## Architecture
