@@ -87,6 +87,9 @@ def track_skier(
     cotracker_enabled: bool = False,
     cotracker_min_gap: int = 20,
     cotracker_resize_h: int = 320,
+    conflict_of_multiplier: float = 3.0,
+    conflict_stickiness_multiplier: float = 0.2,
+    conflict_velocity_multiplier: float = 1.0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -334,11 +337,15 @@ def track_skier(
             and _HAS_NUMPY
         )
         if use_flow_for_merge:
-            # Seed from the best track's first detection
-            best_track_obs_list = tracks[track_scores[0][0]]
+            # Seed from the longest track (most detections = most likely main subject).
+            # The longest track is more robust than the highest-scoring track as a
+            # seed because a bystander with high confidence may outscore the main
+            # skier on quality alone, causing the OF trace to follow the wrong person.
+            seed_tid = max(tracks, key=lambda t: len(tracks[t]))
+            best_track_obs_list = tracks[seed_tid]
             seed_obs = best_track_obs_list[0] if best_track_obs_list else None
             print(f"  Building OF trace for merge (seed: track "
-                  f"{track_scores[0][0]}, {len(frame_candidates)} frames with detections)…")
+                  f"{seed_tid} [longest={len(best_track_obs_list)}dets], {len(frame_candidates)} frames with detections)…")
             preliminary_of_trace = _build_of_trace(
                 n_frames, img_w, img_h,
                 frame_dir, seg_frames,
@@ -367,6 +374,9 @@ def track_skier(
             flow_min_keypoints=flow_min_keypoints,
             of_trace=preliminary_of_trace or None,
             of_trace_filter_enabled=of_trace_filter_enabled,
+            conflict_of_multiplier=conflict_of_multiplier,
+            conflict_stickiness_multiplier=conflict_stickiness_multiplier,
+            conflict_velocity_multiplier=conflict_velocity_multiplier,
         )
         candidate_pool_stats["conflict_summary"] = conflict_stats
 
@@ -795,6 +805,9 @@ def _resolve_merge_conflicts(
     flow_min_keypoints: int = 5,
     of_trace: dict[int, tuple[float, float]] | None = None,
     of_trace_filter_enabled: bool = True,
+    conflict_of_multiplier: float = 3.0,
+    conflict_stickiness_multiplier: float = 0.2,
+    conflict_velocity_multiplier: float = 1.0,
 ) -> dict[int, dict]:
     """Pick one detection per frame using optical-flow continuity and track-ID stickiness.
 
@@ -999,20 +1012,22 @@ def _resolve_merge_conflicts(
                             vel_history, cand_vx, cand_vy,
                         )
 
-                    # During genuine conflicts: OF dominates, stickiness reduced
+                    # During genuine conflicts: apply per-axis multipliers
                     if is_conflict and of_pred_cx is not None:
-                        effective_of_weight = w_of_agreement * 3.0
-                        effective_stickiness = w_track_stickiness * 0.2
+                        effective_of_weight = w_of_agreement * conflict_of_multiplier
+                        effective_stickiness = w_track_stickiness * conflict_stickiness_multiplier
+                        effective_velocity = w_velocity * conflict_velocity_multiplier
                     else:
                         effective_of_weight = w_of_agreement
                         effective_stickiness = w_track_stickiness
+                        effective_velocity = w_velocity
 
                     combined = (
                         quality
                         + w_continuity * continuity
                         + effective_stickiness * stickiness
                         + effective_of_weight * of_agreement
-                        + w_velocity * vel_score
+                        + effective_velocity * vel_score
                     )
                     if combined > best_score:
                         second_best_score = best_score

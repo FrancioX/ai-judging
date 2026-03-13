@@ -595,6 +595,9 @@ def run_pipeline(
             cotracker_enabled=trk_cfg.get("cotracker_enabled", False),
             cotracker_min_gap=trk_cfg.get("cotracker_min_gap", 20),
             cotracker_resize_h=trk_cfg.get("cotracker_resize_h", 320),
+            conflict_of_multiplier=trk_cfg.get("conflict_of_multiplier", 3.0),
+            conflict_stickiness_multiplier=trk_cfg.get("conflict_stickiness_multiplier", 0.2),
+            conflict_velocity_multiplier=trk_cfg.get("conflict_velocity_multiplier", 1.0),
         )
         pose_manifest = track_manifest_path
 
