@@ -1,6 +1,6 @@
 # Project Guidelines — AI Judging
 
-Markerless 3D pose estimation pipeline for freeride skiing competition judging. Converts monocular video → 3D skeletal model with ski detection.
+Markerless 3D pose estimation pipeline for freeride skiing competition judging. Converts monocular video → 3D skeletal model.
 
 ## Code Style
 
@@ -17,9 +17,9 @@ Six-stage disk-coupled pipeline orchestrated by [src/pipeline.py](src/pipeline.p
 
 Each stage is a single-module package with one public function following: `fn(input_path, output_dir, *, config_kwargs...) -> Path`. See [src/segmentation/yolo_seg.py](src/segmentation/yolo_seg.py) as the canonical example.
 
-**Stages**: Frame Extraction → Person Segmentation (YOLO) → 2D Pose (YOLO) → 3D Lifting (MotionBERT) → Ski Detection (GroundingDINO+SAM2 / colour fallback) → Visualization (Plotly 3D / OpenCV).
+**Stages**: Frame Extraction → Person Segmentation (YOLO) → 2D Pose (YOLO) → 3D Lifting (MotionBERT) → Visualization (Plotly 3D / OpenCV).
 
-**Import fallback pattern** (mandatory for ML-model stages): wrap heavy imports in `try/except ImportError` and fall back to a `_write_stub_*()` function. This lets the pipeline run end-to-end without all models installed. See [src/segmentation/yolo_seg.py](src/segmentation/yolo_seg.py) and [src/ski_detection/detector.py](src/ski_detection/detector.py).
+**Import fallback pattern** (mandatory for ML-model stages): wrap heavy imports in `try/except ImportError` and fall back to a `_write_stub_*()` function. This lets the pipeline run end-to-end without all models installed. See [src/segmentation/yolo_seg.py](src/segmentation/yolo_seg.py) as the canonical example.
 
 Config is a plain `dict` loaded from [config.yaml](config.yaml) — accessed via `config.get("key", default)`. No Pydantic/dataclass schema.
 
@@ -43,7 +43,7 @@ uv run ruff check src/
 
 Use `--stage` to run a single stage independently, reusing upstream outputs. Useful for performance comparison with different hyperparameters.
 
-**Available stages**: `frames`, `segmentation`, `tracking`, `pose_2d`, `pose_3d`, `ski_detection`, `visualization`.
+**Available stages**: `frames`, `segmentation`, `tracking`, `pose_2d`, `pose_3d`, `visualization`.
 
 ```bash
 # Run only tracking stage (reuses segmentation output)
@@ -143,7 +143,7 @@ Click the skier's center in each displayed frame. Controls: SPACE=next, LEFT=pre
 ## Integration Points
 
 - **Ultralytics YOLO**: segmentation & pose models loaded from local checkpoints.
-- **MotionBERT / GroundingDINO+SAM2**: referenced but currently stub implementations (TODO).
+- **MotionBERT**: referenced but currently a stub implementation (TODO).
 - Inter-stage coupling: 2D pose reads `bbox_padded` offsets from segmentation/tracking JSON to remap crop-space keypoints to frame coordinates.
 
 ## Experiment Logging

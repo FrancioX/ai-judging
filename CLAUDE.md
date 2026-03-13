@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Markerless 3D pose estimation pipeline for freeride skiing competition judging. Converts monocular video → 3D skeletal model with ski detection.
+Markerless 3D pose estimation pipeline for freeride skiing competition judging. Converts monocular video → 3D skeletal model.
 
 ## Commands
 
@@ -19,7 +19,7 @@ uv run python -m src.pipeline --max-videos 3         # batch
 
 # Run a single stage (reuses upstream outputs)
 uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage tracking
-# Available stages: frames, segmentation, tracking, pose_2d, pose_3d, ski_detection, visualization
+# Available stages: frames, segmentation, tracking, pose_2d, pose_3d, visualization
 
 # Tests & lint
 uv run pytest
@@ -38,12 +38,12 @@ uv run python -m src.tracking.annotate_centers output/frames/<stem> annotations/
 
 ## Architecture
 
-Seven-stage disk-coupled pipeline orchestrated by [src/pipeline.py](src/pipeline.py):
+Six-stage disk-coupled pipeline orchestrated by [src/pipeline.py](src/pipeline.py):
 
 ```
 Raw Video → Frame Extraction → Person Segmentation (YOLOv11x-Seg + ByteTrack)
          → Temporal Tracking → 2D Pose (YOLO11x-Pose) → 3D Lifting (MotionBERT, stub)
-         → Ski Detection (GroundingDINO+SAM2 / colour fallback, stub) → Visualization
+         → Visualization
 ```
 
 Stages communicate via **JSON manifests** and image directories under `output/<stage>/<video_stem>/`. Each stage exposes one public function: `fn(input_path, output_dir, *, config_kwargs...) → Path`. See [src/segmentation/yolo_seg.py](src/segmentation/yolo_seg.py) as the canonical example.
@@ -101,6 +101,38 @@ uv run python -m src.tracking.overlay_gt --batch
 ```
 
 Current aggregate: **32.5px mean error, 0.844 HOTA**.
+
+## Development Video Subsets
+
+Two smaller subsets for fast iteration during tracking experiments (instead of all 18 videos).
+
+### 10-video dev set (5 ski + 5 snowboard)
+
+Chosen to cover the full difficulty range (Exp 21a stats).
+
+| Sport | Athlete | Video stem | Mean Err (px) | HOTA |
+|-------|---------|------------|:---:|:---:|
+| Ski | Andreas Bakke | `VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89` | 8.7 | 0.932 |
+| Ski | Lach Powell | `VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86` | 9.2 | 0.931 |
+| Ski | Emile Peizerat | `VERBIER FREERIDE WEEK QUALIFIER 4__11_Ski Men_Emile Peizerat_76_France_74.83_` | 15.7 | 0.858 |
+| Ski | Jordan Koch | `VERBIER FREERIDE WEEK QUALIFIER 4__10_Ski Men_Jordan Koch_56_Switzerland_75_` | 42.6 | 0.777 |
+| Ski | Gabin Leonard | `VERBIER FREERIDE WEEK QUALIFIER 4__12_Ski Men_Gabin Leonard_26_France_74_` | 58.5 | 0.867 |
+| Snowboard | Jonatan Laland | `VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_` | 4.6 | 0.955 |
+| Snowboard | Adriano Cardillo | `VERBIER FREERIDE WEEK QUALIFIER 4__12_Snowboard Men_Adriano Cardillo_63_Switzerland_52.33_` | 9.8 | 0.913 |
+| Snowboard | Cedric Giraudeau | `VERBIER FREERIDE WEEK QUALIFIER 4__10_Snowboard Men_Cedric Giraudeau_67_France_54.33_` | 13.1 | 0.906 |
+| Snowboard | Quentin Puydenus | `VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_` | 47.8 | 0.753 |
+| Snowboard | Theodor Salen | `VERBIER FREERIDE WEEK QUALIFIER 4__15_Snowboard Men_Theodor Salen_59_Norway_45_` | 54.6 | 0.777 |
+
+### 4-video mini set (2 ski + 2 snowboard)
+
+Maximum contrast: one easy + one hard per sport. Use for the fastest sanity-checks.
+
+| Sport | Athlete | Video stem | Mean Err (px) | HOTA |
+|-------|---------|------------|:---:|:---:|
+| Ski | Andreas Bakke | `VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89` | 8.7 | 0.932 |
+| Ski | Arno Vuarnier | `VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33` | 47.9 | 0.734 |
+| Snowboard | Jonatan Laland | `VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_` | 4.6 | 0.955 |
+| Snowboard | Quentin Puydenus | `VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_` | 47.8 | 0.753 |
 
 ## Experiment Logging
 

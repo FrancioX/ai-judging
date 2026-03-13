@@ -1,7 +1,7 @@
 # AI Judging — 3D Pose Estimation for Freeride Skiing
 
 Markerless 3D pose estimation pipeline that converts monocular video of skiers
-into 3D skeletal models (including ski detection).
+into 3D skeletal models.
 
 ## Pipeline
 
@@ -32,7 +32,6 @@ raw_video.mp4
 
 Disabled stages (re-enable when models are ready):
   • 3D Lifting (MotionBERT)
-  • Ski Detection (GroundingDINO + SAM2)
 ```
 
 ## Setup
@@ -67,7 +66,6 @@ Use the `--stage` flag to run a single stage independently on an existing video.
 - `tracking` — Temporal tracking (requires segmentation output)
 - `pose_2d` — 2D pose estimation (requires segmentation or tracking output)
 - `pose_3d` — 3D pose lifting (requires 2D pose output) *[disabled]*
-- `ski_detection` — Ski detection (requires frames) *[disabled]*
 - `visualization` — Regenerate visualizations (requires frames + poses_2d)
 
 **Examples:**
@@ -106,7 +104,6 @@ ai_judging/
 │   ├── tracking/             # Tracked crops, smoothed bboxes
 │   ├── poses_2d/             # 2D keypoint JSONs
 │   ├── poses_3d/             # 3D keypoint JSONs
-│   ├── ski_masks/            # Ski segmentation masks
 │   └── visualizations/       # Overlay videos & 3D HTML
 └── src/
     ├── pipeline.py           # Main orchestrator
@@ -114,7 +111,6 @@ ai_judging/
     ├── tracking/             # Track selection, gap filling, bbox smoothing
     ├── pose_2d/              # 2D pose estimation (YOLO-Pose)
     ├── pose_3d/              # 2D → 3D lifting (MotionBERT stub)
-    ├── ski_detection/        # Ski detection module
     ├── visualization/        # 3D rendering & overlays
     └── utils/video.py        # Frame extraction
 ```
@@ -330,6 +326,5 @@ the per-frame segmentation selection (previous behaviour).
 | Person Segmentation | **YOLOv11x-seg** (Ultralytics) | `imgsz=1280` | Pixel-level instance masks for clean crops; higher resolution improves small-person recall |
 | 2D Pose | **YOLO11x-Pose** (Ultralytics) | `imgsz=640` | Single-model 17-keypoint detection, MPS-native |
 | 3D Lift | **MotionBERT** | — | Temporal transformer, state-of-the-art monocular 3D |
-| Ski Det | **GroundingDINO + SAM2** | — | Zero-shot prompted detection ("ski") with pixel-precise masks |
 
 The pipeline includes fallback stubs so you can run the end-to-end flow even before downloading model checkpoints.

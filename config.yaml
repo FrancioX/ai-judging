@@ -87,13 +87,6 @@ pose_3d:
   device: "mps"
   receptive_field: 243          # temporal window (frames)
 
-# Ski detection
-ski_detection:
-  method: "grounding_sam2"      # grounding_sam2 | color_segmentation
-  prompt: "ski"
-  device: "mps"
-  confidence: 0.35
-
 # Visualization
 visualization:
   render_3d: true

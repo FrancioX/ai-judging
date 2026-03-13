@@ -11,7 +11,6 @@ Quality-first 7-stage pipeline:
 
 Disabled stages (re-enable when models are ready):
 - 3D pose lifting (MotionBERT)
-- Ski detection (GroundingDINO+SAM2)
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from src.tracking.tracker import track_skier
 from src.pose_2d.yolo_pose import estimate_2d_poses as estimate_2d_poses_yolo
 # Disabled imports (re-enable when models are ready):
 # from src.pose_3d.lifter import lift_to_3d
-# from src.ski_detection.detector import detect_skis
 from src.visualization.render import (
     visualize_2d_overlay,
     visualize_segmentation_boxes,
@@ -80,13 +78,6 @@ STAGES = {
         "display_name": "3D Pose Lifting (MotionBERT)",
         "dependencies": ["pose_2d"],
         "output_dir": "poses_3d",
-    },
-    "ski_detection": {
-        "module": "src.ski_detection.detector",
-        "function": "detect_skis",
-        "display_name": "Ski Detection",
-        "dependencies": ["frames"],
-        "output_dir": "ski_masks",
     },
     "visualization": {
         "module": "src.visualization.render",
@@ -204,14 +195,6 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "device": p3d_cfg.get("device", "mps"),
             "receptive_field": p3d_cfg.get("receptive_field", 243),
         }
-    elif stage_name == "ski_detection":
-        ski_cfg = config.get("ski_detection", {})
-        return {
-            "method": ski_cfg.get("method", "color_segmentation"),
-            "prompt": ski_cfg.get("prompt", "ski"),
-            "device": ski_cfg.get("device", "mps"),
-            "confidence": ski_cfg.get("confidence", 0.35),
-        }
     elif stage_name == "visualization":
         viz_cfg = config.get("visualization", {})
         return {
@@ -305,9 +288,6 @@ def _validate_stage_inputs(
                 f"Run `--stage pose_2d` first."
             )
         resolved["poses_2d_path"] = poses_2d_path
-        return resolved
-
-    if stage_name == "ski_detection":
         return resolved
 
     if stage_name == "visualization":
@@ -435,18 +415,6 @@ def run_single_stage(
             lift_to_3d(poses_2d_path, pose_3d_dir, **kwargs)
         except ImportError:
             print("Error: 3D pose lifting module not available")
-            sys.exit(1)
-
-    # ── Stage: Ski Detection ───────────────────────────────────────────
-    elif stage_name == "ski_detection":
-        frame_dir = resolved["frame_dir"]
-        ski_dir = base_out / "ski_masks" / video_stem
-        kwargs = _stage_config(config, stage_name)
-        try:
-            from src.ski_detection.detector import detect_skis
-            detect_skis(frame_dir, ski_dir, **kwargs)
-        except ImportError:
-            print("Error: Ski detection module not available")
             sys.exit(1)
 
     # ── Stage: Visualization ───────────────────────────────────────────
@@ -659,21 +627,6 @@ def run_pipeline(
     #     model_name=p3d_cfg.get("model", "motionbert"),
     #     device=p3d_cfg.get("device", "mps"),
     #     receptive_field=p3d_cfg.get("receptive_field", 243),
-    # )
-
-    # ── DISABLED: Ski Detection ──────────────────────────────────────────
-    # Re-enable when GroundingDINO+SAM2 is fully integrated.
-    # ski_cfg = config.get("ski_detection", {})
-    # print(f"\n{'='*60}")
-    # print(f"Step X/4 — Ski Detection")
-    # print(f"{'='*60}")
-    # ski_path = detect_skis(
-    #     frame_dir,
-    #     ski_dir,
-    #     method=ski_cfg.get("method", "color_segmentation"),
-    #     prompt=ski_cfg.get("prompt", "ski"),
-    #     device=ski_cfg.get("device", "mps"),
-    #     confidence=ski_cfg.get("confidence", 0.35),
     # )
 
     # ── Step 6: 2D Pose Overlay Visualization ──────────────────────────
