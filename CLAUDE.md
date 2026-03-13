@@ -136,4 +136,73 @@ Maximum contrast: one easy + one hard per sport. Use for the fastest sanity-chec
 
 ## Experiment Logging
 
-When running tracking experiments, always log results in [experiments/experiment_log.md](experiments/experiment_log.md). Each entry must include: date, goal (one-sentence hypothesis), implementation summary, results table (per-video `mean_error_px` + `HOTA` with delta vs previous best), and conclusion. Use sub-entries (3a, 3b, …) for iterative tuning. Update the "Current Best" section when a new best is achieved.
+For **manual experiments** (outside of a loop), log results by appending an entry to [experiments/experiment_log.md](experiments/experiment_log.md). Each entry must include: date, goal (one-sentence hypothesis), implementation summary, results table (per-video `mean_error_px` + `HOTA` with delta vs previous best), and conclusion. Use sub-entries (3a, 3b, …) for iterative tuning. Update the "Current Best" section when a new best is achieved.
+
+For **experiment loops**, each loop writes to its own dedicated log file — see the Experiment Loop section below.
+
+## Experiment Loop
+
+### Trigger
+Start when the user says "run an experiment loop" or similar phrasing. The loop runs **indefinitely** until the user explicitly asks to stop.
+
+### Setup
+1. Create a new git worktree + branch named `exp-loop-YYYYMMDD` (today's date) and work exclusively inside it for the duration of the loop. Leave it in place when the loop ends so the user can review the full commit history.
+2. Create a dedicated log file for this loop at `experiments/loop-YYYYMMDD.md`. All experiment entries for this loop go there — do not append to `experiment_log.md`.
+3. Note any context the user provides at startup:
+   - **Focus area** — which pipeline stage to improve (e.g., tracking).
+   - **Candidate list** — potential improvements to try.
+   - **Experiment history** — experiments already run (from `experiments/experiment_log.md`, existing loop logs, or supplied inline).
+
+### Per-Iteration Steps
+
+**1. Select**
+Pick the most promising untried improvement from the candidate list. Do not repeat a previously discarded experiment unless a new change creates a clear synergy that did not exist when it was first tried.
+
+**2. Implement**
+Make the change. Prefer improvements that are a single self-contained step, or that can be decomposed into independent steps. Avoid changes that greatly increase coupling between components or algorithmic complexity. A modular improvement that is slightly weaker beats a tightly coupled one that is slightly stronger.
+
+**3. Quick evaluation — mini set**
+Run the stage being tested on the 4-video mini set and evaluate:
+```bash
+uv run python -m src.pipeline raw_videos/VIDEO.mp4 --stage tracking  # repeat for all 4 mini-set videos
+uv run python -m src.tracking.evaluate --batch
+```
+
+**4. Full evaluation — dev set** *(only if mini set shows improvement)*
+Run on the full 10-video dev set and evaluate to get a reliable score estimate.
+
+**5. Decide**
+
+| Outcome | Action |
+|---------|--------|
+| Metrics improve | Accept — keep code change, update `config.yaml` to the winning configuration |
+| Metrics regress or neutral | Reject — revert code change, restore `config.yaml` to current best |
+
+**6. Log**
+Append an entry to this loop's log file (`experiments/loop-YYYYMMDD.md`) regardless of outcome. Required fields: date, goal (one-sentence hypothesis), implementation summary, results table with per-video `mean_error_px` + `HOTA` and deltas vs previous best, conclusion. Use sub-entries (Xa, Xb, …) for iterative tuning within the same idea.
+
+**7. Commit**
+Commit all changes to the worktree branch with a descriptive message. The committed state must always leave `config.yaml` reflecting the current best results.
+
+**8. Loop**
+Return to step 1 immediately. Do not pause or ask for confirmation between iterations.
+
+---
+
+### Tracking Targets
+
+When the focus area is tracking, maintain **two** best states simultaneously:
+
+| Target | Criterion |
+|--------|-----------|
+| **Accuracy best** | Lowest aggregate mean error / highest HOTA, regardless of processing time |
+| **Speed best** | Reaches ≥ 95% of accuracy-best performance with meaningfully lower processing time |
+
+A change may advance one target without advancing the other — both are worth pursuing independently.
+
+### Architecture Criterion
+
+When choosing between approaches of similar expected performance, prefer the one that:
+- Adds a single isolated processing step over one that modifies multiple interdependent components.
+- Can be independently disabled or tuned via `config.yaml` without touching other stages.
+- Does not increase coupling between pipeline stages.
