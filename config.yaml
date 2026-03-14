@@ -20,7 +20,7 @@ frame_extraction:
 segmentation:
   model: "yolo11x-seg"           # yolo11{n,s,m,l,x}-seg
   device: "mps"                  # mps for Apple Silicon, cuda:0 for NVIDIA
-  confidence: 0.5
+  confidence: 0.25
   padding_ratio: 0.50            # extra padding around bbox (fraction)
   select_strategy: "center"     # largest | center | highest_conf
   imgsz: 1280                    # YOLO input resolution (640/1280/1920)

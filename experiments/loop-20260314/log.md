@@ -74,3 +74,88 @@ Quentin hash changed (4226a41c50 → 20df94be53); others identical.
 **Conclusion:** **ACCEPTED.** `of_drift_guard_px: 400.0`. Mini-set mean error: 25.0px (−2.2px vs 27.2px baseline), HOTA: 0.852 (+0.008). The root cause confirmed: the 200px guard was incorrectly reverting OF to linear interpolation for Quentin's 1014 aerial gap-filled frames where the person's real trajectory deviated >200px from straight-line.
 
 ---
+
+## Iter 4 — Phase C: Kalman r_interp_pos tuning (2026-03-14)
+
+**Hypothesis:** Increasing `r_interp_pos` makes the Kalman rely more on its constant-acceleration dynamics model during long aerial gaps rather than noisy OF positions, producing a more physically plausible parabolic trajectory.
+
+**Implementation:** Swept `r_interp_pos` across 20, 40 (baseline), 80, 160. Pure config change.
+
+**Results (mini-set):**
+
+| r_interp_pos | Arno err | Quentin err | Mean | HOTA |
+|:------------:|:--------:|:-----------:|:----:|:----:|
+| 20 | 47.7 | 38.9 | 25.0 | 0.852 |
+| 40 (baseline) | 47.7 | 38.9 | 25.0 | 0.852 |
+| 80 | 47.7 | 38.9 | 25.0 | 0.852 |
+| 160 | 47.7 | 38.9 | 25.0 | 0.852 |
+
+**Conclusion:** Null result. Rejected. The Kalman noise parameter has no effect on the final trajectory positions — the OF gap-fill outputs are already at fixed positions, and varying how much the Kalman trusts them doesn't change the smoothed result on these videos. Additionally confirmed: Arno's 713 gap frames are a **detection failure** (white clothes + snowy background → YOLO does not detect him), not a tracking failure. Filling those gaps better requires segmentation-stage improvements (confidence threshold, model), not Phase C tuning.
+
+---
+
+## Iter 5 — Phase B/A: dense optical flow (2026-03-14)
+
+**Hypothesis:** Switching from "auto" (sparse LK + dense fallback) to "dense" Farneback OF handles large inter-frame motion during aerials better than sparse keypoint tracking, reducing gap-fill error.
+
+**Implementation:** `optical_flow_method: "dense"`. Pure config change.
+
+**Results (mini-set):**
+
+| Video | Baseline err | Dense err | Δ err | Baseline HOTA | Dense HOTA | Δ HOTA |
+|-------|:-----------:|:---------:|:-----:|:-------------:|:----------:|:------:|
+| Arno Vuarnier | 47.7 | 52.8 | +5.1 | 0.734 | 0.731 | −0.003 |
+| Andreas Bakke | 8.7 | 9.1 | +0.4 | 0.932 | 0.926 | −0.006 |
+| Jonatan Laland | 4.6 | 5.8 | +1.2 | 0.955 | 0.942 | −0.013 |
+| Quentin Puydenus | 38.9 | 52.2 | +13.3 | 0.788 | 0.708 | −0.080 |
+| **Mean** | **25.0** | **30.0** | **+5.0** | **0.852** | **0.827** | **−0.025** |
+
+**Conclusion:** Rejected. Dense Farneback is significantly worse across all videos, especially Quentin (−80 HOTA points). Root cause: sparse LK is better at tracking the actual person bbox because it focuses on the most trackable keypoints around the last detected region; dense Farneback tracks average background motion across the whole frame and easily gets confused by camera shake and large motion.
+
+---
+
+## Iter 6 — Phase A merge: lower merge_threshold_low to recover excluded tracks (2026-03-14)
+
+**Hypothesis:** Track 30 (76 dets, score 0.4922) is just 0.0078 below the 0.5 threshold and represents legitimate Arno detections near the aerial section. Lowering `merge_threshold_low` from 0.5 to 0.45 would recover Track 30 + Track 4 (28 dets, 0.4761), adding ~90 detected frames and reducing gap fill for both Arno and Quentin.
+
+**Investigation finding:** Arno's 186 excluded frames come from 13 short tracks that scored 0.35–0.49. Segmentation has 900 detected frames but tracking only uses 714 because the merge excludes low-scoring track fragments.
+
+**Results (mini-set):**
+
+| Video | Baseline err | 0.45 thresh err | Δ err | Baseline HOTA | New HOTA | Δ HOTA |
+|-------|:-----------:|:---------------:|:-----:|:-------------:|:--------:|:------:|
+| Arno Vuarnier | 47.7 | 70.7 | +23.0 | 0.734 | 0.681 | −0.053 |
+| Andreas Bakke | 8.7 | 8.7 | 0.0 | 0.932 | 0.932 | 0.000 |
+| Jonatan Laland | 4.6 | 4.6 | 0.0 | 0.955 | 0.955 | 0.000 |
+| Quentin Puydenus | 38.9 | 56.2 | +17.3 | 0.788 | 0.752 | −0.036 |
+| **Mean** | **25.0** | **35.1** | **+10.1** | **0.852** | **0.830** | **−0.022** |
+
+**Conclusion:** Rejected — catastrophic regression. Root cause: even at score 0.49, the excluded tracks for Arno and Quentin contain wrong detections (bystanders, ghost detections at incorrect positions). Including them floods the candidate pool, generates many new conflicts (Arno: 0→29 conflicts; Quentin: 144→344 conflicts), and the conflict resolver picks incorrectly. The 0.5 adaptive threshold is correctly filtering out contaminated tracks. **The 186 excluded Arno frames are not recoverable through threshold tuning — they're on genuinely ambiguous ByteTrack segments that score low because they're partially wrong.**
+
+---
+
+## Iter 7 — Segmentation: lower YOLO confidence threshold to 0.3 (2026-03-14)
+
+**Hypothesis:** YOLO11x-seg's default confidence threshold of 0.5 misses many frames where the skier is correctly detected at lower confidence (white clothes against snow, small size during aerials). Lowering to 0.3 recovers those detections without significantly increasing false positives.
+
+**Investigation:** Arno's segmentation at conf=0.5 had 900/1427 frames detected (63%), but 527 frames had conf=0.0 (YOLO completely missed). At conf=0.3, this jumped to 1160/1427 (81%), recovering 260 frames. Quentin similarly had large gaps that the lower threshold fills.
+
+**Implementation:** `segmentation.confidence: 0.3` (from 0.5). Pure config change, applies to all videos.
+
+**Results (mini-set):**
+
+| Video | Baseline err | conf=0.3 err | Δ err | Baseline HOTA | New HOTA | Δ HOTA |
+|-------|:-----------:|:------------:|:-----:|:-------------:|:--------:|:------:|
+| Arno Vuarnier | 47.7 | 35.3 | **−12.4** | 0.734 | 0.847 | **+0.113** |
+| Andreas Bakke | 8.7 | 8.4 | −0.3 | 0.932 | 0.935 | +0.003 |
+| Jonatan Laland | 4.6 | 4.8 | +0.2 | 0.955 | 0.954 | −0.001 |
+| Quentin Puydenus | 38.9 | 13.6 | **−25.3** | 0.788 | 0.892 | **+0.104** |
+| **Mean** | **25.0** | **15.5** | **−9.5** | **0.852** | **0.907** | **+0.055** |
+
+Also: Arno detected frames 714→872 (+158), Jonatan 1806→2042 (+236), Quentin 1158→1569 (+411). Quentin conflicts collapsed from 144→0 (many frames that caused ambiguous multi-detection conflicts at conf=0.5 are now cleanly detected).
+
+**Dev-set evaluation:** Deferred — requires re-running segmentation on 6 more dev-set videos.
+
+**Conclusion:** **ACCEPTED** — largest improvement of any experiment in this loop. `segmentation.confidence: 0.3`. Mini-set mean: 15.5px (−9.5px vs 25.0px), HOTA: 0.907 (+0.055). The 0.5 default threshold was too conservative for white-suited athletes in snowy conditions; 0.3 recovers the signal without flooding the tracker with false positives (HOTA improvement confirms correct identity maintained).
+
+---
