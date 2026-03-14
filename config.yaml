@@ -77,6 +77,7 @@ tracking:
   cotracker_enabled: false          # Phase B.1: CoTracker3 offline joint-trajectory fill for long gaps
   cotracker_min_gap: 20             # only re-fill gaps >= this length with CoTracker3
   cotracker_resize_h: 320           # resize frames to this height for CoTracker3 inference
+  kalman_reinit_gap: 0              # Phase C: re-init Kalman state after gaps >= this length (0 = disabled)
 
 # 2D pose estimation (YOLO-Pose)
 pose_2d:

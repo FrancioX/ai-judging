@@ -90,6 +90,7 @@ def track_skier(
     conflict_of_multiplier: float = 3.0,
     conflict_stickiness_multiplier: float = 0.2,
     conflict_velocity_multiplier: float = 1.0,
+    kalman_reinit_gap: int = 0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -587,6 +588,7 @@ def track_skier(
         if use_flow and flow_velocities:
             smoothed_velocities = _smooth_bboxes_velocity_aware(
                 frame_bboxes, n_frames, smooth_window, flow_velocities,
+                kalman_reinit_gap=kalman_reinit_gap,
             )
         else:
             _smooth_bboxes(frame_bboxes, n_frames, smooth_window)
@@ -2227,6 +2229,7 @@ def _smooth_bboxes_velocity_aware(
     n_frames: int,
     window: int,
     flow_velocities: dict[int, tuple[float, float]],
+    kalman_reinit_gap: int = 0,
 ) -> dict[int, tuple[float, float]]:
     """Smooth bboxes using a Kalman filter with constant acceleration model.
 
@@ -2313,7 +2316,8 @@ def _smooth_bboxes_velocity_aware(
     vx0, vy0 = flow_velocities.get(sorted_ids[0], (0.0, 0.0))
 
     x = np.array([cx0, cy0, vx0, vy0, 0.0, 0.0, w0, h0])
-    P = np.diag([5.0, 5.0, 25.0, 25.0, 100.0, 100.0, 10.0, 10.0])
+    P_init = np.diag([5.0, 5.0, 25.0, 25.0, 100.0, 100.0, 10.0, 10.0])
+    P = P_init.copy()
 
     I_ns = np.eye(NS)
 
@@ -2322,6 +2326,10 @@ def _smooth_bboxes_velocity_aware(
     P_fwd: list[np.ndarray] = []
     x_pred_store: list[np.ndarray] = []
     P_pred_store: list[np.ndarray] = []
+
+    # Indices where Kalman state was re-initialised (segment boundaries)
+    reinit_indices: set[int] = set()
+    consec_interp: int = 0
 
     # --- Forward Kalman filter --------------------------------------------
     for i, fid in enumerate(sorted_ids):
@@ -2356,6 +2364,15 @@ def _smooth_bboxes_velocity_aware(
         is_det = frame_bboxes[fid].get("detected", False)
         R_cur = R_det if is_det else R_interp
 
+        # Kalman segment re-init: after a long gap, restart from current detection
+        if kalman_reinit_gap > 0 and is_det and consec_interp >= kalman_reinit_gap:
+            vx_seed, vy_seed = flow_velocities.get(fid, (0.0, 0.0))
+            x_pred = np.array([z[0], z[1], vx_seed, vy_seed, 0.0, 0.0, z[2], z[3]])
+            P_pred = P_init.copy()
+            reinit_indices.add(i)
+
+        consec_interp = 0 if is_det else consec_interp + 1
+
         y = z - H @ x_pred
         S = H @ P_pred @ H.T + R_cur
         K = P_pred @ H.T @ np.linalg.inv(S)
@@ -2381,6 +2398,10 @@ def _smooth_bboxes_velocity_aware(
     x_smooth[-1] = x_fwd[-1].copy()
 
     for i in range(n - 2, -1, -1):
+        # Don't propagate backward across a re-init boundary
+        if (i + 1) in reinit_indices:
+            x_smooth[i] = x_fwd[i].copy()
+            continue
         P_pred = P_pred_store[i + 1]
         try:
             G = P_fwd[i] @ F.T @ np.linalg.inv(P_pred)
