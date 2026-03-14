@@ -91,6 +91,7 @@ def track_skier(
     conflict_stickiness_multiplier: float = 0.2,
     conflict_velocity_multiplier: float = 1.0,
     kalman_reinit_gap: int = 0,
+    w_size: float = 0.0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -367,6 +368,7 @@ def track_skier(
             w_continuity=w_continuity,
             w_track_stickiness=w_track_stickiness,
             w_velocity=w_velocity,
+            w_size=w_size,
             vel_history_len=vel_history_len,
             of_synthetic_confidence=of_synthetic_confidence,
             frame_dir=frame_dir,
@@ -798,6 +800,7 @@ def _resolve_merge_conflicts(
     w_track_stickiness: float = 0.4,
     w_of_agreement: float = 1.5,
     w_velocity: float = 0.4,
+    w_size: float = 0.0,
     vel_history_len: int = 5,
     of_tight_radius_px: float = 150.0,
     of_synthetic_confidence: float = 0.3,
@@ -873,6 +876,7 @@ def _resolve_merge_conflicts(
         vel_history: collections.deque[tuple[float, float]] = collections.deque(
             maxlen=vel_history_len,
         )
+        area_history: collections.deque[float] = collections.deque(maxlen=50)
         _conflict_count = 0
         _score_margins: list[float] = []
         _of_available_in_conflict = 0
@@ -927,6 +931,9 @@ def _resolve_merge_conflicts(
                     prev_cx = (p_bbox[0] + p_bbox[2]) / 2
                     prev_cy = (p_bbox[1] + p_bbox[3]) / 2
                     vel_history.append((det_cx - prev_cx, det_cy - prev_cy))
+                b = candidates[0]["bbox"]
+                area = max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
+                area_history.append(area)
                 p_bbox = candidates[0]["bbox"]
                 p_track_id = candidates[0].get("track_id")
                 p_fid = fid
@@ -1014,6 +1021,18 @@ def _resolve_merge_conflicts(
                             vel_history, cand_vx, cand_vy,
                         )
 
+                    # Bbox area consistency: reward candidates whose area matches
+                    # the historical skier bbox area (bystanders are often smaller)
+                    size_score = 0.5  # neutral default
+                    if w_size > 0.0 and len(area_history) >= 5:
+                        import math as _math
+                        mean_area = sum(area_history) / len(area_history)
+                        b = det["bbox"]
+                        det_area = max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
+                        ratio = det_area / mean_area
+                        # Gaussian in log-ratio space (sigma=0.5 → ±50% area = 0.78 score)
+                        size_score = _math.exp(-0.5 * (_math.log(ratio) ** 2) / (0.5 ** 2))
+
                     # During genuine conflicts: apply per-axis multipliers
                     if is_conflict and of_pred_cx is not None:
                         effective_of_weight = w_of_agreement * conflict_of_multiplier
@@ -1030,6 +1049,7 @@ def _resolve_merge_conflicts(
                         + effective_stickiness * stickiness
                         + effective_of_weight * of_agreement
                         + effective_velocity * vel_score
+                        + w_size * size_score
                     )
                     if combined > best_score:
                         second_best_score = best_score

@@ -599,6 +599,7 @@ def run_pipeline(
             conflict_stickiness_multiplier=trk_cfg.get("conflict_stickiness_multiplier", 0.2),
             conflict_velocity_multiplier=trk_cfg.get("conflict_velocity_multiplier", 1.0),
             kalman_reinit_gap=trk_cfg.get("kalman_reinit_gap", 0),
+            w_size=trk_cfg.get("w_size", 0.0),
         )
         pose_manifest = track_manifest_path
 
