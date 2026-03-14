@@ -181,3 +181,24 @@ Arno detected frames with "largest": 862 (vs 872 with "center"). 10 fewer detect
 **Conclusion:** Null result. Rejected — no effective config revert needed since "largest" was already the baseline default in config.yaml. At conf=0.3, both "center" and "largest" resolve to the same detection in virtually every frame — the skier is the only large/central detection. The 10-frame detection difference did not measurably affect mean error.
 
 ---
+
+## Iter 9 — Phase B: re-sweep `of_drift_guard_px` at conf=0.3 baseline (2026-03-14)
+
+**Hypothesis:** Iter 3 found 400px optimal at conf=0.5 (Arno: 713 gap frames, Quentin: 1014). With conf=0.3, gaps are shorter (Arno: 565, Quentin: 603) and detection patterns differ. The optimal drift guard may have shifted.
+
+**Implementation:** Swept `of_drift_guard_px` across 0 (disabled), 200, 300, 400 (current), 500, 600. Pure config change; tracking rerun for Arno and Quentin only (segmentation cached).
+
+**Sweep results (Arno + Quentin only, Andreas/Jonatan unchanged at 8.4/0.935 and 4.8/0.954):**
+
+| Guard (px) | Arno err | Arno HOTA | Quentin err | Quentin HOTA | 4-video mean err | 4-video HOTA |
+|:----------:|:--------:|:---------:|:-----------:|:------------:|:----------------:|:------------:|
+| 0 (disabled) | 35.3 | 0.848 | 13.6 | 0.892 | 15.5 | 0.907 |
+| **200** | **51.1** | **0.791** | **15.3** | **0.885** | **~19.8** | **~0.899** |
+| 300 | 35.3 | 0.848 | 13.6 | 0.892 | 15.5 | 0.907 |
+| 400 (current) | 35.3 | 0.848 | 13.6 | 0.892 | 15.5 | 0.907 |
+| 500 | 35.3 | 0.848 | 13.6 | 0.892 | 15.5 | 0.907 |
+| 600 | 35.3 | 0.848 | 13.6 | 0.892 | 15.5 | 0.907 |
+
+**Conclusion:** Null result. Rejected. Guard=200 uniquely bad (prematurely falls back to linear interpolation when OF is correctly tracking). Guards 0, 300–600 are all identical — with conf=0.3, OF gap-fill never drifts >300px from linear for Arno's or Quentin's aerial gaps, so the guard never triggers above 300. Current 400px is in the flat optimal zone. Key insight: Arno's 35.3px error is the best achievable via LK optical flow on the current 565-frame aerial gap — the drift guard is no longer the bottleneck.
+
+---
