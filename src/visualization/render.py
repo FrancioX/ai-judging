@@ -58,10 +58,7 @@ def visualize_segmentation_boxes(
     frames_data = manifest["frames"]
 
     # Get frame paths
-    frame_paths = sorted(
-        list(frame_dir.glob("frame_*.jpg"))
-        + list(frame_dir.glob("frame_*.png"))
-    )
+    frame_paths = sorted(list(frame_dir.glob("frame_*.jpg")) + list(frame_dir.glob("frame_*.png")))
 
     if not frame_paths:
         raise FileNotFoundError(f"No frames in {frame_dir}")
@@ -150,10 +147,7 @@ def visualize_tracking_boxes(
     frames_data = manifest["frames"]
 
     # Get frame paths
-    frame_paths = sorted(
-        list(frame_dir.glob("frame_*.jpg"))
-        + list(frame_dir.glob("frame_*.png"))
-    )
+    frame_paths = sorted(list(frame_dir.glob("frame_*.jpg")) + list(frame_dir.glob("frame_*.png")))
 
     if not frame_paths:
         raise FileNotFoundError(f"No frames in {frame_dir}")
@@ -165,8 +159,6 @@ def visualize_tracking_boxes(
     out_path = output_dir / "tracking_boxes.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, (w, h))
-
-    selected_track_id = manifest.get("selected_track_id", -1)
 
     for fpath, fdata in tqdm(
         zip(frame_paths, frames_data), total=len(frame_paths), desc="Tracking Boxes"
@@ -196,7 +188,6 @@ def visualize_tracking_boxes(
 
         # Add track info text
         track_id = fdata.get("track_id", -1)
-        conf = fdata.get("confidence", 0.0)
         status = "Interp" if is_interpolated else "Detect"
         text = f"Track:{track_id} {status}"
 
@@ -257,10 +248,7 @@ def visualize_2d_overlay(
                 tracking_data = json.load(f)
             tracking_frames_data = tracking_data.get("frames", [])
 
-    frame_paths = sorted(
-        list(frame_dir.glob("frame_*.jpg"))
-        + list(frame_dir.glob("frame_*.png"))
-    )
+    frame_paths = sorted(list(frame_dir.glob("frame_*.jpg")) + list(frame_dir.glob("frame_*.png")))
 
     if not frame_paths:
         raise FileNotFoundError(f"No frames in {frame_dir}")
@@ -327,7 +315,6 @@ def visualize_3d_plotly(
 ) -> Path:
     """Create an interactive 3D visualization using Plotly."""
     import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -418,3 +405,134 @@ def visualize_3d_plotly(
     fig.write_html(str(out_path))
     print(f"  → 3D interactive visualization saved to {out_path}")
     return out_path
+
+
+def visualize_3d_side_by_side(
+    frame_dir: str | Path,
+    poses_3d_path: str | Path,
+    output_dir: str | Path,
+    *,
+    fps: float = 30.0,
+) -> Path:
+    """Render source frames and projected 3D skeleton side-by-side to MP4."""
+    import cv2
+    from tqdm import tqdm
+
+    frame_dir = Path(frame_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_paths = sorted(list(frame_dir.glob("frame_*.jpg")) + list(frame_dir.glob("frame_*.png")))
+    if not frame_paths:
+        raise FileNotFoundError(f"No frames in {frame_dir}")
+
+    with open(poses_3d_path) as f:
+        poses_data = json.load(f)
+    frames_data = poses_data["frames"]
+
+    sample = cv2.imread(str(frame_paths[0]))
+    if sample is None:
+        raise RuntimeError(f"Unable to read first frame: {frame_paths[0]}")
+    frame_h, frame_w = sample.shape[:2]
+    panel_h, panel_w = frame_h, frame_w
+
+    out_path = output_dir / "side_by_side_3d.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (frame_w + panel_w, frame_h))
+
+    all_kpts = np.array([f["keypoints_3d"] for f in frames_data], dtype=np.float32)
+    axis_extent = float(np.max(np.abs(all_kpts))) + 1e-6
+
+    frame_count = min(len(frame_paths), len(frames_data))
+    for idx in tqdm(range(frame_count), total=frame_count, desc="3D Side-by-Side"):
+        frame = cv2.imread(str(frame_paths[idx]))
+        if frame is None:
+            continue
+        if frame.shape[0] != frame_h or frame.shape[1] != frame_w:
+            frame = cv2.resize(frame, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR)
+
+        kpts = np.array(frames_data[idx]["keypoints_3d"], dtype=np.float32)
+        panel = _render_projected_3d_panel(
+            kpts,
+            width=panel_w,
+            height=panel_h,
+            axis_extent=axis_extent,
+        )
+
+        composed = cv2.hconcat([frame, panel])
+        writer.write(composed)
+
+    writer.release()
+    print(f"  3D side-by-side video saved to {out_path}")
+    return out_path
+
+
+def _render_projected_3d_panel(
+    keypoints_3d: np.ndarray,
+    *,
+    width: int,
+    height: int,
+    axis_extent: float,
+) -> np.ndarray:
+    """Project a 3D skeleton to a 2D canvas using a fixed camera view."""
+    import cv2
+
+    canvas = np.full((height, width, 3), 245, dtype=np.uint8)
+    margin = int(min(width, height) * 0.1)
+
+    yaw = np.deg2rad(32.0)
+    pitch = np.deg2rad(-20.0)
+    ry = np.array(
+        [
+            [np.cos(yaw), 0.0, np.sin(yaw)],
+            [0.0, 1.0, 0.0],
+            [-np.sin(yaw), 0.0, np.cos(yaw)],
+        ],
+        dtype=np.float32,
+    )
+    rx = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(pitch), -np.sin(pitch)],
+            [0.0, np.sin(pitch), np.cos(pitch)],
+        ],
+        dtype=np.float32,
+    )
+    rot = rx @ ry
+
+    pts = keypoints_3d.astype(np.float32)
+    center = np.mean(pts[[11, 12]], axis=0, keepdims=True)
+    pts = pts - center
+    pts_rot = (rot @ pts.T).T
+
+    scale = (min(width, height) - 2 * margin) / (2.2 * axis_extent)
+    origin_x = width // 2
+    origin_y = height // 2
+
+    def to_px(point: np.ndarray) -> tuple[int, int]:
+        x = int(origin_x + point[0] * scale)
+        y = int(origin_y - point[1] * scale)
+        return x, y
+
+    axis_len = axis_extent * 0.9
+    axes = [
+        (np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([axis_len, 0.0, 0.0], dtype=np.float32), (40, 80, 240)),
+        (np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([0.0, axis_len, 0.0], dtype=np.float32), (50, 180, 60)),
+        (np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([0.0, 0.0, axis_len], dtype=np.float32), (230, 120, 40)),
+    ]
+    for start, end, color in axes:
+        s = to_px((rot @ start.T).T)
+        e = to_px((rot @ end.T).T)
+        cv2.line(canvas, s, e, color, 2)
+
+    for i, j in SKELETON_CONNECTIONS:
+        p1 = to_px(pts_rot[i])
+        p2 = to_px(pts_rot[j])
+        cv2.line(canvas, p1, p2, (34, 139, 230), 3)
+
+    for point in pts_rot:
+        px = to_px(point)
+        cv2.circle(canvas, px, 4, (20, 20, 220), -1)
+
+    cv2.putText(canvas, "3D Skeleton", (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 60), 2)
+    return canvas

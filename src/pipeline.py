@@ -16,6 +16,7 @@ Disabled stages (re-enable when models are ready):
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -25,13 +26,14 @@ from src.utils.video import extract_frames, load_frame_meta
 from src.segmentation.yolo_seg import segment_skier
 from src.tracking.tracker import track_skier
 from src.pose_2d.yolo_pose import estimate_2d_poses as estimate_2d_poses_yolo
-# Disabled imports (re-enable when models are ready):
-# from src.pose_3d.lifter import lift_to_3d
+from src.pose_3d.lifter import lift_to_3d
 from src.visualization.render import (
     visualize_2d_overlay,
+    visualize_3d_plotly,
+    visualize_3d_side_by_side,
     visualize_segmentation_boxes,
     visualize_tracking_boxes,
-)  # visualize_3d_plotly disabled
+)
 
 
 def load_config(path: str | Path = "config.yaml") -> dict:
@@ -192,8 +194,12 @@ def _stage_config(config: dict, stage_name: str) -> dict:
         p3d_cfg = config.get("pose_3d", {})
         return {
             "model_name": p3d_cfg.get("model", "motionbert"),
+            "checkpoint_path": p3d_cfg.get("checkpoint"),
+            "checkpoint_url": p3d_cfg.get("checkpoint_url"),
             "device": p3d_cfg.get("device", "mps"),
             "receptive_field": p3d_cfg.get("receptive_field", 243),
+            "model_kwargs": p3d_cfg.get("model_kwargs"),
+            "batch_size": p3d_cfg.get("batch_size", 16),
         }
     elif stage_name == "visualization":
         viz_cfg = config.get("visualization", {})
@@ -294,6 +300,10 @@ def _validate_stage_inputs(
         poses_2d_dir = base_out / "poses_2d" / video_stem
         poses_2d_path = poses_2d_dir / "poses_2d.json"
         resolved["poses_2d_path"] = poses_2d_path if poses_2d_path.exists() else None
+
+        poses_3d_dir = base_out / "poses_3d" / video_stem
+        poses_3d_path = poses_3d_dir / "poses_3d.json"
+        resolved["poses_3d_path"] = poses_3d_path if poses_3d_path.exists() else None
 
         track_dir = base_out / "tracking" / video_stem
         track_manifest = track_dir / "tracking.json"
@@ -398,6 +408,14 @@ def run_single_stage(
         frame_dir = resolved["frame_dir"]
         pose_manifest = resolved["pose_manifest"]
         pose_manifest_source = resolved.get("pose_manifest_source", "segmentation")
+        if pose_manifest_source == "tracking":
+            try:
+                with open(pose_manifest) as f:
+                    json.load(f)
+            except Exception:
+                print("  Warning: tracking manifest is invalid JSON; falling back to segmentation manifest")
+                pose_manifest = resolved["seg_manifest"]
+                pose_manifest_source = "segmentation"
         pose_2d_dir = base_out / "poses_2d" / video_stem
         kwargs = _stage_config(config, stage_name)
         print(f"  Using {pose_manifest_source} manifest for pose estimation")
@@ -421,9 +439,13 @@ def run_single_stage(
     elif stage_name == "visualization":
         frame_dir = resolved["frame_dir"]
         poses_2d_path = resolved.get("poses_2d_path")
+        poses_3d_path = resolved.get("poses_3d_path")
         track_manifest = resolved.get("track_manifest")
         seg_manifest = resolved.get("seg_manifest")
         viz_dir = base_out / "visualizations" / video_stem
+        viz_cfg = config.get("visualization", {})
+        render_3d = viz_cfg.get("render_3d", True)
+        export_format = viz_cfg.get("export_format", "html")
 
         viz_fps = _get_viz_fps(frame_dir, video_path)
 
@@ -455,6 +477,15 @@ def run_single_stage(
         if seg_manifest and seg_manifest.exists():
             print(f"  Rendering segmentation boxes ({viz_fps:.2f} fps)")
             visualize_segmentation_boxes(frame_dir, seg_manifest, viz_dir, fps=viz_fps)
+
+        if render_3d and poses_3d_path and poses_3d_path.exists():
+            print(f"  Rendering 3D side-by-side ({viz_fps:.2f} fps)")
+            visualize_3d_side_by_side(frame_dir, poses_3d_path, viz_dir, fps=viz_fps)
+            if export_format == "html":
+                print("  Rendering interactive 3D HTML")
+                visualize_3d_plotly(poses_3d_path, viz_dir, fps=int(viz_fps))
+        elif render_3d:
+            print("  3D poses not found; skipping 3D visualization")
 
     print(f"\n{'='*60}")
     print(f"✓ {stage_info['display_name']} complete for {video_path.name}")
@@ -492,12 +523,13 @@ def run_pipeline(
     seg_dir = base_out / "segmentation" / video_stem
     track_dir = base_out / "tracking" / video_stem
     pose_2d_dir = base_out / "poses_2d" / video_stem
+    pose_3d_dir = base_out / "poses_3d" / video_stem
     viz_dir = base_out / "visualizations" / video_stem
 
     # ── Step 1: Extract frames ──────────────────────────────────────────
     fe_cfg = config.get("frame_extraction", {})
     print(f"\n{'='*60}")
-    print(f"Step 1/6 — Frame Extraction: {video_path.name}")
+    print(f"Step 1/8 - Frame Extraction: {video_path.name}")
     print(f"{'='*60}")
     extract_frames(
         video_path,
@@ -516,7 +548,7 @@ def run_pipeline(
     # ── Step 2: Person Segmentation + Crop Extraction (YOLO-Seg) ────────
     seg_cfg = config.get("segmentation", {})
     print(f"\n{'='*60}")
-    print("Step 2/6 — Person Segmentation (YOLO-Seg)")
+    print("Step 2/8 - Person Segmentation (YOLO-Seg)")
     print(f"{'='*60}")
     seg_manifest_path = segment_skier(
         frame_dir,
@@ -542,7 +574,7 @@ def run_pipeline(
         cap.release()
     if stop_after is None:
         print(f"\n{'='*60}")
-        print(f"Step 3/6 — Visualization (Pre-Tracking) ({viz_fps:.2f} fps)")
+        print(f"Step 3/8 - Visualization (Pre-Tracking) ({viz_fps:.2f} fps)")
         print(f"{'='*60}")
         visualize_segmentation_boxes(frame_dir, seg_manifest_path, viz_dir, fps=viz_fps)
 
@@ -552,7 +584,7 @@ def run_pipeline(
     pose_manifest = seg_manifest_path
     if tracking_enabled:
         print(f"\n{'='*60}")
-        print("Step 4/6 — Temporal Tracking")
+        print("Step 4/8 - Temporal Tracking")
         print(f"{'='*60}")
         track_manifest_path = track_skier(
             seg_manifest_path,
@@ -602,7 +634,7 @@ def run_pipeline(
     # ── Step 5: 2D Pose Estimation ──────────────────────────────────────
     p2d_cfg = config.get("pose_2d", {})
     print(f"\n{'='*60}")
-    print("Step 5/6 — 2D Pose Estimation (YOLO)")
+    print("Step 5/8 - 2D Pose Estimation (YOLO)")
     print(f"{'='*60}")
     poses_2d_path = estimate_2d_poses_yolo(
         frame_dir,
@@ -615,23 +647,26 @@ def run_pipeline(
         segmentation_manifest=pose_manifest,
     )
 
-    # ── DISABLED: 3D Pose Lifting ────────────────────────────────────────
-    # Re-enable when MotionBERT is fully integrated.
-    # p3d_cfg = config.get("pose_3d", {})
-    # print(f"\n{'='*60}")
-    # print(f"Step X/4 — 3D Pose Lifting")
-    # print(f"{'='*60}")
-    # poses_3d_path = lift_to_3d(
-    #     poses_2d_path,
-    #     pose_3d_dir,
-    #     model_name=p3d_cfg.get("model", "motionbert"),
-    #     device=p3d_cfg.get("device", "mps"),
-    #     receptive_field=p3d_cfg.get("receptive_field", 243),
-    # )
-
-    # ── Step 6: 2D Pose Overlay Visualization ──────────────────────────
+    # ── Step 6: 3D Pose Lifting ─────────────────────────────────────────
+    p3d_cfg = config.get("pose_3d", {})
     print(f"\n{'='*60}")
-    print(f"Step 6/7 — 2D Pose Overlay Visualization ({viz_fps:.2f} fps)")
+    print("Step 6/8 - 3D Pose Lifting (MotionBERT)")
+    print(f"{'='*60}")
+    poses_3d_path = lift_to_3d(
+        poses_2d_path,
+        pose_3d_dir,
+        model_name=p3d_cfg.get("model", "motionbert"),
+        checkpoint_path=p3d_cfg.get("checkpoint"),
+        checkpoint_url=p3d_cfg.get("checkpoint_url"),
+        device=p3d_cfg.get("device", "mps"),
+        receptive_field=p3d_cfg.get("receptive_field", 243),
+        model_kwargs=p3d_cfg.get("model_kwargs"),
+        batch_size=p3d_cfg.get("batch_size", 16),
+    )
+
+    # ── Step 7: 2D Pose Overlay Visualization ──────────────────────────
+    print(f"\n{'='*60}")
+    print(f"Step 7/8 - 2D Pose Overlay Visualization ({viz_fps:.2f} fps)")
     print(f"{'='*60}")
     visualize_2d_overlay(
         frame_dir,
@@ -642,12 +677,18 @@ def run_pipeline(
         fps=viz_fps,
     )
 
-    # ── Step 7: Visualization (Post-Tracking) ───────────────────────────
+    # ── Step 8: Visualization (Post-Tracking + 3D) ─────────────────────
+    viz_cfg = config.get("visualization", {})
     print(f"\n{'='*60}")
-    print(f"Step 7/7 — Visualization (Post-Tracking) ({viz_fps:.2f} fps)")
+    print(f"Step 8/8 - Visualization (Post-Tracking + 3D) ({viz_fps:.2f} fps)")
     print(f"{'='*60}")
     if tracking_enabled:
         visualize_tracking_boxes(frame_dir, track_manifest_path, viz_dir, fps=viz_fps)
+
+    if viz_cfg.get("render_3d", True):
+        visualize_3d_side_by_side(frame_dir, poses_3d_path, viz_dir, fps=viz_fps)
+        if viz_cfg.get("export_format", "html") == "html":
+            visualize_3d_plotly(poses_3d_path, viz_dir, fps=int(viz_fps))
 
     print(f"\n{'='*60}")
     print(f"✓ Pipeline complete for {video_path.name}")

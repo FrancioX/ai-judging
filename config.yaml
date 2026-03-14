@@ -82,10 +82,23 @@ pose_2d:
 
 # 3D pose lifting
 pose_3d:
-  model: "motionbert"           # motionbert | videopose3d
-  checkpoint: null              # auto-downloaded if null
+  model: "motionbert"           # motionbert | naive
+  checkpoint: null               # required for motionbert unless checkpoint_url is set
+  checkpoint_url: "https://huggingface.co/walterzhu/MotionBERT/resolve/main/checkpoint/pose3d/FT_MB_release_MB_ft_h36m/best_epoch.bin?download=true"
   device: "mps"
-  receptive_field: 243          # temporal window (frames)
+  receptive_field: 81           # temporal window (frames)
+  batch_size: 16
+  model_kwargs:
+    dim_in: 3
+    dim_out: 3
+    dim_feat: 512
+    dim_rep: 512
+    depth: 5
+    num_heads: 8
+    mlp_ratio: 2
+    num_joints: 17
+    maxlen: 243
+    att_fuse: true
 
 # Visualization
 visualization:
