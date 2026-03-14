@@ -159,3 +159,25 @@ Also: Arno detected frames 714→872 (+158), Jonatan 1806→2042 (+236), Quentin
 **Conclusion:** **ACCEPTED** — largest improvement of any experiment in this loop. `segmentation.confidence: 0.3`. Mini-set mean: 15.5px (−9.5px vs 25.0px), HOTA: 0.907 (+0.055). The 0.5 default threshold was too conservative for white-suited athletes in snowy conditions; 0.3 recovers the signal without flooding the tracker with false positives (HOTA improvement confirms correct identity maintained).
 
 ---
+
+## Iter 8 — Segmentation: select_strategy "largest" vs "center" (2026-03-14)
+
+**Hypothesis:** Switching from `select_strategy: "center"` (pick the detection closest to frame center) to `"largest"` (pick the largest bbox) recovers more Arno aerial frames where the skier is correctly segmented but not necessarily near frame center.
+
+**Implementation:** `segmentation.select_strategy: "largest"`. Pure config change. Mini-set rerun (segmentation + tracking) from scratch with conf=0.3 and select_strategy="largest".
+
+**Results (mini-set):**
+
+| Video | Baseline err (px) | New err (px) | Δ err | Baseline HOTA | New HOTA | Δ HOTA |
+|-------|:-----------------:|:------------:|:-----:|:-------------:|:--------:|:------:|
+| Arno Vuarnier | 35.3 | 35.3 | 0.0 | 0.847 | 0.848 | +0.001 |
+| Andreas Bakke | 8.4 | 8.4 | 0.0 | 0.935 | 0.935 | 0.000 |
+| Jonatan Laland | 4.8 | 4.8 | 0.0 | 0.954 | 0.954 | 0.000 |
+| Quentin Puydenus | 13.6 | 13.6 | 0.0 | 0.892 | 0.892 | 0.000 |
+| **Mean** | **15.5** | **15.5** | **0.0** | **0.907** | **0.907** | **0.000** |
+
+Arno detected frames with "largest": 862 (vs 872 with "center"). 10 fewer detected frames, but no aggregate metric change.
+
+**Conclusion:** Null result. Rejected — no effective config revert needed since "largest" was already the baseline default in config.yaml. At conf=0.3, both "center" and "largest" resolve to the same detection in virtually every frame — the skier is the only large/central detection. The 10-frame detection difference did not measurably affect mean error.
+
+---
