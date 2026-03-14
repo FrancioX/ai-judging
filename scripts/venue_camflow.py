@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -203,19 +204,39 @@ def compute_cumulative_background_flow(
     dark_threshold: int = 80,
     min_gradient: float = 5.0,
     min_dark_pixels: int = 50,
+    zoom_correct: bool = False,
     verbose: bool = True,
 ) -> tuple[np.ndarray, int]:
     """Compute cumulative background flow using dark-feature (rock/tree) pixels.
 
+    Parameters
+    ----------
+    zoom_correct : bool
+        If True, normalize each frame's flow by the athlete's bounding-box area
+        (proxy for camera zoom).  As the camera zooms in, the athlete's bbox
+        grows; a larger bbox means more video pixels per venue metre, so we
+        divide the flow by sqrt(bbox_area / ref_area) to get a zoom-invariant
+        signal.
+
     Returns
     -------
     (cum_flow, n_dark_frames)
-        cum_flow: shape (N, 2), cumulative flow from frame 0.
+        cum_flow: shape (N, 2), cumulative zoom-corrected flow from frame 0.
         n_dark_frames: number of frames where dark pixels were used (vs fallback).
     """
     n = len(frame_files)
     per_frame_bg = np.zeros((n, 2), dtype=float)
     n_dark_used = 0
+
+    # Bbox areas per frame (for zoom correction)
+    bbox_areas = np.zeros(n, dtype=float)
+    for i, bb in enumerate(bboxes):
+        if len(bb) >= 4:
+            w = max(1.0, bb[2] - bb[0])
+            h = max(1.0, bb[3] - bb[1])
+            bbox_areas[i] = w * h
+
+    ref_area = bbox_areas[bbox_areas > 0].mean() if np.any(bbox_areas > 0) else 1.0
 
     prev_gray = None
     for i, fname in enumerate(frame_files):
@@ -227,7 +248,6 @@ def compute_cumulative_background_flow(
             continue
 
         if prev_gray is not None:
-            # Check dark pixel count at current frame to know which path was taken
             dark_mask = _dark_feature_mask(
                 prev_gray, bboxes[i],
                 dark_threshold=dark_threshold,
@@ -242,6 +262,13 @@ def compute_cumulative_background_flow(
                 min_gradient=min_gradient,
                 min_dark_pixels=min_dark_pixels,
             )
+
+            # Zoom correction: normalise by sqrt(bbox_area / ref_area)
+            if zoom_correct and bbox_areas[i] > 0:
+                zoom_factor = float(np.sqrt(bbox_areas[i] / ref_area))
+                dx /= zoom_factor
+                dy /= zoom_factor
+
             per_frame_bg[i] = [dx, dy]
 
         prev_gray = frame_bgr
@@ -379,12 +406,20 @@ def run_loo_evaluation(
     venue_w: int,
     venue_h: int,
     *,
+    fixed_anchor_fid: int | None = None,
     verbose: bool = True,
 ) -> dict:
     """Leave-one-out cross-validation over GT frames within tracking range.
 
     Uses PCHIP regression on cumulative background flow (not frame index).
     GT is used for calibration only — never as a lookup for the prediction.
+
+    Parameters
+    ----------
+    fixed_anchor_fid : int | None
+        If given, this GT frame is NEVER held out (it's a fixed known anchor,
+        e.g., competition start gate). Simulates production where start
+        position is always known.
     """
     id_to_idx = {fid: i for i, fid in enumerate(frame_ids)}
     in_range = {fid: v for fid, v in gt.items() if fid in id_to_idx}
@@ -396,6 +431,8 @@ def run_loo_evaluation(
     details = []
 
     for held_fid, (true_vx, true_vy) in sorted(in_range.items()):
+        if fixed_anchor_fid is not None and held_fid == fixed_anchor_fid:
+            continue  # skip — fixed anchor, not evaluated
         ix, iy, fb, _ = calibrate_pchip(
             cum_flow, frame_ids, gt, venue_w, venue_h, held_out=held_fid
         )
@@ -453,6 +490,100 @@ def run_full_evaluation(
         "within_50px": float(np.mean(errors_arr <= 50.0)),
         "calibration_rms": rms,
     }
+
+
+# ---------------------------------------------------------------------------
+# Video output
+# ---------------------------------------------------------------------------
+
+def _write_venue_video(
+    frame_dir: Path,
+    frame_files: list[str],
+    frame_ids: list[int],
+    venue_bgr: np.ndarray,
+    cum_flow: np.ndarray,
+    interp_x,
+    interp_y,
+    fallback_params: np.ndarray,
+    venue_w: int,
+    venue_h: int,
+    output_path: Path,
+    *,
+    gt: dict[int, tuple[float, float]] | None = None,
+    fps: float = 30.0,
+    trail_length: int = 80,
+    verbose: bool = True,
+) -> None:
+    """Render side-by-side video: original frame (left) + venue with predicted dot (right).
+
+    Uses full-GT calibration (all GT points) for prediction at every frame.
+    GT points are drawn as yellow crosses on the venue panel if provided.
+    """
+    n = len(frame_files)
+    trail: deque[tuple[int, int]] = deque(maxlen=trail_length)
+
+    writer = None
+    frame_w = frame_h = None
+
+    for i, (fname, fid) in enumerate(zip(frame_files, frame_ids)):
+        frame_bgr = cv2.imread(str(frame_dir / fname), cv2.IMREAD_COLOR)
+        if frame_bgr is None:
+            continue
+
+        if frame_w is None:
+            frame_h, frame_w = frame_bgr.shape[:2]
+            # Resize venue panel to match frame height
+            scale = frame_h / venue_h
+            panel_w = int(venue_w * scale)
+            panel_h = frame_h
+            # init writer
+            out_w = frame_w + panel_w
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(output_path), fourcc, fps, (out_w, frame_h))
+
+        # Predict venue position for this frame
+        vx, vy = predict(cum_flow, i, interp_x, interp_y, fallback_params, venue_w, venue_h)
+        trail.append((int(round(vx)), int(round(vy))))
+
+        # Draw venue panel
+        venue_panel = venue_bgr.copy()
+
+        # Draw fading trail
+        trail_pts = list(trail)
+        if len(trail_pts) >= 2:
+            n_seg = len(trail_pts) - 1
+            for j in range(n_seg):
+                alpha = (j + 1) / max(1, n_seg)
+                color = (int(20 + 120 * alpha), int(40 + 180 * alpha), int(200 + 30 * alpha))
+                thickness = 1 if alpha < 0.4 else 2
+                cv2.line(venue_panel, trail_pts[j], trail_pts[j + 1], color, thickness, lineType=cv2.LINE_AA)
+
+        # Draw GT points
+        if gt:
+            for gt_fid, (gt_vx, gt_vy) in gt.items():
+                cv2.drawMarker(venue_panel, (int(gt_vx), int(gt_vy)),
+                               color=(0, 255, 255), markerType=cv2.MARKER_CROSS,
+                               markerSize=14, thickness=2)
+
+        # Draw current prediction
+        cur = trail_pts[-1]
+        cv2.circle(venue_panel, cur, radius=8, color=(20, 40, 240), thickness=-1, lineType=cv2.LINE_AA)
+        cv2.circle(venue_panel, cur, radius=12, color=(180, 220, 255), thickness=2, lineType=cv2.LINE_AA)
+
+        # Resize venue panel to match frame height
+        venue_small = cv2.resize(venue_panel, (panel_w, panel_h), interpolation=cv2.INTER_AREA)
+
+        # Compose side-by-side
+        combined = np.concatenate([frame_bgr, venue_small], axis=1)
+        writer.write(combined)
+
+        if verbose and i % 200 == 0:
+            print(f"  [video] {i}/{n} frames...", end="\r")
+
+    if writer is not None:
+        writer.release()
+    if verbose:
+        print(f"  [video] {n}/{n} frames done. → {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +672,26 @@ def run_venue_camflow(
               f"median={loo_res['median_err_px']:.1f}px  "
               f"P90={loo_res['p90_err_px']:.1f}px  "
               f"within50={loo_res['within_50px']:.0%}")
+
+    # Video output
+    if not no_video:
+        if verbose:
+            print("\n[camflow] Rendering venue mapping video...")
+        ix_full, iy_full, fb_full, _ = calibrate_pchip(
+            cum_flow, frame_ids, gt, venue_w, venue_h
+        )
+        video_out = output_dir / "camflow_venue.mp4"
+        _write_venue_video(
+            frame_dir, frame_files, frame_ids,
+            venue_bgr, cum_flow,
+            ix_full, iy_full, fb_full,
+            venue_w, venue_h,
+            video_out,
+            gt=gt,
+            verbose=verbose,
+        )
+        if verbose:
+            print(f"[camflow] Video saved: {video_out}")
 
     # Save results
     results = {

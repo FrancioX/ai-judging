@@ -67,3 +67,28 @@ is always known (one fixed anchor per venue).
 **Pending**: Test with frame 150 GT KEPT as fixed anchor (simulates knowing the start gate
 venue position from competition registration). All other frames are LOO-predicted.
 Expected: Knözinger LOO mean drops from 67px to ~28px; within50px ~90%.
+
+---
+
+## Exp 2c — Video output + zoom_correct=False confirmation
+
+**Date**: 2026-03-14
+**Changes**:
+- Added `_write_venue_video` to `venue_camflow.py`: side-by-side MP4 (video frame left, venue
+  image right with blue dot + fading trail + yellow GT crosses). Uses full-GT calibration.
+- Set `zoom_correct=False` (default) after confirming bbox area is ~constant due to
+  `fixed_crop_width=192, fixed_crop_height=320` in config — zoom correction was a no-op.
+
+**Knözinger video output**: `output/venue_mapping/Snowboard Men_1_80_Fabian Knözinger/camflow_venue.mp4`
+
+**Note**: GT annotations are approximate (visual annotation on a wide-angle image). LOO numbers
+below the annotation noise floor (~20-30px) are not meaningful to optimize further.
+
+**Final LOO results (unchanged from Exp 2)**:
+
+| Video | n_frames | n_GT | LOO mean | LOO median | LOO P90 | LOO within 50px |
+|-------|----------|:---:|:---:|:---:|:---:|:---:|
+| Andreas Bakke | 1223 | 15 | **52.9px** | 48.2px | 91.5px | 53% |
+| Knözinger | 2343 | 25 | **67.0px** | **25.6px** | 62.4px | **88%** |
+
+Knözinger mean inflated by one extrapolation outlier (frame 150, 989px). Excluding that: **28.6px mean**.
