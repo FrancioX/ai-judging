@@ -263,3 +263,23 @@ CoTracker ran on the 293-frame gap (frames 403→697) but immediately returned N
 **Conclusion:** Rejected. Arno +5.6px regression. Root cause: Arno is invisible in all 133 trailing frames (frames 1294–1426). OF cannot track an invisible person — it drifts significantly from the true position over 133 frames. The "copy farthest" method (static last detection at frame 1293) is better because it at least stays near the last known ground truth position. Reverted to `flow_max_extrapolate_frames: 30`.
 
 ---
+
+## Iter 13 — Phase B: force linear interpolation for all internal gaps (`of_min_gap_for_fill: 1000`) (2026-03-14)
+
+**Hypothesis:** For internal gaps where the athlete is completely invisible (all 5 Quentin gaps and Arno's 293-frame gap have zero YOLO detections), bidirectional LK optical flow tracks background features rather than the athlete. Linear interpolation (straight chord from takeoff to landing) should be more accurate, since both anchor detections are correct and the chord approximates the parabolic aerial arc.
+
+**Implementation:** `of_min_gap_for_fill: 1000`. Since Andreas (0 internal gaps) and Jonatan (0 internal gaps) have no internal gaps at all, only Arno and Quentin are affected. Pure config change.
+
+**Results (mini-set):**
+
+| Video | Baseline err (px) | New err (px) | Δ err | Baseline HOTA | New HOTA | Δ HOTA |
+|-------|:-----------------:|:------------:|:-----:|:-------------:|:--------:|:------:|
+| Arno Vuarnier | 35.3 | 47.9 | **+12.6** | 0.848 | 0.734 | **−0.114** |
+| Andreas Bakke | 8.4 | 9.2 | +0.8 | 0.935 | 0.934 | −0.001 |
+| Jonatan Laland | 4.8 | 4.8 | 0.0 | 0.954 | 0.954 | 0.000 |
+| Quentin Puydenus | 13.6 | 15.7 | **+2.1** | 0.892 | 0.882 | **−0.010** |
+| **Mean** | **15.5** | **19.4** | **+3.9** | **0.907** | **0.876** | **−0.031** |
+
+**Conclusion:** Rejected. Hypothesis was wrong — OF bidirectional blending is significantly more accurate than linear interpolation for invisible aerial gaps. Arno regresses +12.6px (293-frame gap); Quentin regresses +2.1px (62–132 frame gaps). Root cause: bidirectional OF blending anchors to both the takeoff and landing endpoints while following camera motion between them. Even though OF tracks background features (not the invisible athlete), the combination of both-endpoint anchoring and camera-motion-aware trajectory produces positions closer to ground truth than a naïve straight-line chord. Reverted to `of_min_gap_for_fill: 10`. Key takeaway: **bidirectional OF blending is an important accuracy mechanism that should not be bypassed**.
+
+---
