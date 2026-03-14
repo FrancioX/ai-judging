@@ -150,6 +150,8 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "min_track_frames": trk_cfg.get("min_track_frames", 10),
             "smooth_window": trk_cfg.get("smooth_window", 5),
             "padding_ratio": seg_cfg.get("padding_ratio", 0.15),
+            "fixed_crop_width": trk_cfg.get("fixed_crop_width", 0),
+            "fixed_crop_height": trk_cfg.get("fixed_crop_height", 0),
             "merge_tracks": trk_cfg.get("merge_tracks", True),
             "merge_score_threshold": trk_cfg.get("merge_score_threshold", 0.3),
             "merge_min_detection_conf": trk_cfg.get("merge_min_detection_conf", 0.0),

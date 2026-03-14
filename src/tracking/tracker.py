@@ -54,6 +54,8 @@ def track_skier(
     min_track_frames: int = 10,
     smooth_window: int = 5,
     padding_ratio: float = 0.15,
+    fixed_crop_width: int = 0,
+    fixed_crop_height: int = 0,
     merge_tracks: bool = True,
     merge_score_threshold: float = 0.3,
     merge_min_detection_conf: float = 0.0,
@@ -114,6 +116,8 @@ def track_skier(
     min_track_frames : ignore tracks shorter than this.
     smooth_window : EMA / moving-average window (0 = disabled).
     padding_ratio : extra padding around bbox (fraction of width/height).
+    fixed_crop_width : fixed crop width in pixels (0 = use padding-based width).
+    fixed_crop_height : fixed crop height in pixels (0 = use padding-based height).
     merge_tracks : if True, merge multiple high-scoring tracks.
     merge_score_threshold : minimum score for track inclusion in merge.
     optical_flow_method : ``"auto"`` (sparse LK, fallback to dense),
@@ -174,6 +178,10 @@ def track_skier(
     print(f"Running temporal tracking on {n_frames} frames …")
     print(f"  Weights — conf: {w_conf}  center: {w_center}  length: {w_length}")
     print(f"  Smooth window: {smooth_window}  |  Full coverage: guaranteed")
+    if fixed_crop_width > 0 and fixed_crop_height > 0:
+        print(f"  Crop mode: fixed {fixed_crop_width}x{fixed_crop_height}")
+    else:
+        print(f"  Crop mode: padding ratio {padding_ratio}")
     if merge_tracks:
         print(f"  Multi-track merge: enabled (threshold {merge_score_threshold:.2f})")
 
@@ -200,7 +208,9 @@ def track_skier(
         # person from the segmentation manifest directly.
         print("  ⚠ No track IDs found — falling back to segmentation selection")
         return _write_passthrough(seg_data, frame_dir, output_dir,
-                                  padding_ratio, crop_dir)
+                                  padding_ratio, crop_dir,
+                                  fixed_crop_width=fixed_crop_width,
+                                  fixed_crop_height=fixed_crop_height)
 
     max_dist = math.sqrt((img_w / 2) ** 2 + (img_h / 2) ** 2)
     cx, cy = img_w / 2, img_h / 2
@@ -608,13 +618,17 @@ def track_skier(
         fb = frame_bboxes[idx]
 
         x1, y1, x2, y2 = fb["bbox"]
-        bw, bh = x2 - x1, y2 - y1
-        pad_x = int(bw * padding_ratio)
-        pad_y = int(bh * padding_ratio)
-        px1 = max(0, x1 - pad_x)
-        py1 = max(0, y1 - pad_y)
-        px2 = min(img_w, x2 + pad_x)
-        py2 = min(img_h, y2 + pad_y)
+        px1, py1, px2, py2 = _compute_padded_or_fixed_crop(
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            img_w=img_w,
+            img_h=img_h,
+            padding_ratio=padding_ratio,
+            fixed_crop_width=fixed_crop_width,
+            fixed_crop_height=fixed_crop_height,
+        )
 
         img = cv2.imread(str(frame_dir / frame_file))
         if img is None:
@@ -682,6 +696,8 @@ def track_skier(
         "weights": {"w_conf": w_conf, "w_center": w_center, "w_length": w_length},
         "smooth_window": smooth_window,
         "padding_ratio": padding_ratio,
+        "fixed_crop_width": fixed_crop_width,
+        "fixed_crop_height": fixed_crop_height,
         "optical_flow_method_used": of_method_used if use_flow else "none",
         "identity_guard_enabled": identity_guard_enabled,
         "identity_guard_rejections": identity_rejections,
@@ -2556,6 +2572,42 @@ def _smooth_bboxes(
         frame_bboxes[fid]["bbox"] = avg
 
 
+def _compute_padded_or_fixed_crop(
+    *,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    img_w: int,
+    img_h: int,
+    padding_ratio: float,
+    fixed_crop_width: int,
+    fixed_crop_height: int,
+) -> tuple[int, int, int, int]:
+    """Compute crop window from bbox using fixed size or padding mode."""
+    if fixed_crop_width > 0 and fixed_crop_height > 0:
+        crop_w = min(fixed_crop_width, img_w)
+        crop_h = min(fixed_crop_height, img_h)
+
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+
+        px1 = int(round(cx - crop_w / 2.0))
+        py1 = int(round(cy - crop_h / 2.0))
+        px1 = max(0, min(px1, img_w - crop_w))
+        py1 = max(0, min(py1, img_h - crop_h))
+        return px1, py1, px1 + crop_w, py1 + crop_h
+
+    bw, bh = x2 - x1, y2 - y1
+    pad_x = int(bw * padding_ratio)
+    pad_y = int(bh * padding_ratio)
+    px1 = max(0, x1 - pad_x)
+    py1 = max(0, y1 - pad_y)
+    px2 = min(img_w, x2 + pad_x)
+    py2 = min(img_h, y2 + pad_y)
+    return px1, py1, px2, py2
+
+
 # ---------------------------------------------------------------------------
 # Fallback when no track IDs are present
 # ---------------------------------------------------------------------------
@@ -2566,6 +2618,9 @@ def _write_passthrough(
     output_dir: Path,
     padding_ratio: float,
     crop_dir: Path,
+    *,
+    fixed_crop_width: int = 0,
+    fixed_crop_height: int = 0,
 ) -> Path:
     """Write a tracking manifest that mirrors the segmentation selection.
 
@@ -2586,13 +2641,17 @@ def _write_passthrough(
 
         if seg_fr.get("detected", False):
             x1, y1, x2, y2 = seg_fr["bbox"]
-            bw, bh = x2 - x1, y2 - y1
-            pad_x = int(bw * padding_ratio)
-            pad_y = int(bh * padding_ratio)
-            px1 = max(0, x1 - pad_x)
-            py1 = max(0, y1 - pad_y)
-            px2 = min(img_w, x2 + pad_x)
-            py2 = min(img_h, y2 + pad_y)
+            px1, py1, px2, py2 = _compute_padded_or_fixed_crop(
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+                img_w=img_w,
+                img_h=img_h,
+                padding_ratio=padding_ratio,
+                fixed_crop_width=fixed_crop_width,
+                fixed_crop_height=fixed_crop_height,
+            )
 
             crop = img[py1:py2, px1:px2]
             crop_name = f"crop_{idx:06d}.jpg"
@@ -2611,14 +2670,29 @@ def _write_passthrough(
             })
         else:
             crop_name = f"crop_{idx:06d}.jpg"
-            cv2.imwrite(str(crop_dir / crop_name), img)
+            px1, py1, px2, py2 = _compute_padded_or_fixed_crop(
+                x1=0,
+                y1=0,
+                x2=img_w,
+                y2=img_h,
+                img_w=img_w,
+                img_h=img_h,
+                padding_ratio=padding_ratio,
+                fixed_crop_width=fixed_crop_width,
+                fixed_crop_height=fixed_crop_height,
+            )
+            crop = img[py1:py2, px1:px2]
+            if crop.size == 0:
+                crop = img
+                px1, py1, px2, py2 = 0, 0, img_w, img_h
+            cv2.imwrite(str(crop_dir / crop_name), crop)
             manifest_frames.append({
                 "frame_id": idx,
                 "frame_file": frame_file,
                 "detected": False,
                 "interpolated": False,
                 "bbox": [0, 0, img_w, img_h],
-                "bbox_padded": [0, 0, img_w, img_h],
+                "bbox_padded": [px1, py1, px2, py2],
                 "confidence": 0.0,
                 "track_id": None,
                 "crop_file": crop_name,
@@ -2633,6 +2707,8 @@ def _write_passthrough(
         "interpolate_gaps": False,
         "max_gap_frames": 0,
         "padding_ratio": padding_ratio,
+        "fixed_crop_width": fixed_crop_width,
+        "fixed_crop_height": fixed_crop_height,
         "n_frames": len(manifest_frames),
         "frames": manifest_frames,
     }

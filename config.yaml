@@ -35,6 +35,8 @@ tracking:
   w_length: 0.2              # weight for track duration ratio
   min_track_frames: 10       # ignore tracks shorter than this
   smooth_window: 5            # EMA window for bbox smoothing (0 = off)
+  fixed_crop_width: 192       # fixed tracking crop width in pixels (0 = disabled)
+  fixed_crop_height: 320      # fixed tracking crop height in pixels (0 = disabled)
   merge_tracks: true          # merge multiple high-scoring tracks (solves fragmentation)
   merge_score_threshold: 0.6  # minimum score for track inclusion in merge
   merge_min_detection_conf: 0.0  # minimum per-detection confidence to enter the merge candidate pool
