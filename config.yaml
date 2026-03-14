@@ -75,6 +75,7 @@ tracking:
   conflict_stickiness_multiplier: 1.0  # Stickiness weight multiplier during Phase A genuine conflicts (was 0.2)
   conflict_velocity_multiplier: 1.0  # Velocity weight multiplier during Phase A genuine conflicts
   w_size: 0.0                        # Phase A: bbox area consistency score weight (0 = disabled)
+  w_color: 0.0                       # Phase A: HSV color histogram similarity weight (0 = disabled)
   cotracker_enabled: false          # Phase B.1: CoTracker3 offline joint-trajectory fill for long gaps
   cotracker_min_gap: 20             # only re-fill gaps >= this length with CoTracker3
   cotracker_resize_h: 320           # resize frames to this height for CoTracker3 inference

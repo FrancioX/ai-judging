@@ -92,6 +92,7 @@ def track_skier(
     conflict_velocity_multiplier: float = 1.0,
     kalman_reinit_gap: int = 0,
     w_size: float = 0.0,
+    w_color: float = 0.0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -369,6 +370,7 @@ def track_skier(
             w_track_stickiness=w_track_stickiness,
             w_velocity=w_velocity,
             w_size=w_size,
+            w_color=w_color,
             vel_history_len=vel_history_len,
             of_synthetic_confidence=of_synthetic_confidence,
             frame_dir=frame_dir,
@@ -801,6 +803,7 @@ def _resolve_merge_conflicts(
     w_of_agreement: float = 1.5,
     w_velocity: float = 0.4,
     w_size: float = 0.0,
+    w_color: float = 0.0,
     vel_history_len: int = 5,
     of_tight_radius_px: float = 150.0,
     of_synthetic_confidence: float = 0.3,
@@ -877,6 +880,10 @@ def _resolve_merge_conflicts(
             maxlen=vel_history_len,
         )
         area_history: collections.deque[float] = collections.deque(maxlen=50)
+        # Accumulated reference HSV histogram for appearance-based scoring
+        ref_hist: "np.ndarray | None" = None
+        ref_hist_count: int = 0
+        _color_frame_cache: dict[int, "np.ndarray | None"] = {}
         _conflict_count = 0
         _score_margins: list[float] = []
         _of_available_in_conflict = 0
@@ -934,6 +941,33 @@ def _resolve_merge_conflicts(
                 b = candidates[0]["bbox"]
                 area = max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
                 area_history.append(area)
+                # Update reference color histogram from this single-candidate frame
+                if w_color > 0.0 and ref_hist_count < 30 and frame_dir is not None and seg_frames is not None:
+                    _img = _color_frame_cache.get(fid)
+                    if _img is None:
+                        try:
+                            import cv2 as _cv2
+                            _fp = frame_dir / seg_frames[fid]["frame_file"]
+                            _img = _cv2.imread(str(_fp))
+                        except Exception:
+                            _img = None
+                        _color_frame_cache[fid] = _img
+                    if _img is not None:
+                        _bx = b
+                        _x1, _y1, _x2, _y2 = max(0, _bx[0]), max(0, _bx[1]), min(_img.shape[1], _bx[2]), min(_img.shape[0], _bx[3])
+                        if _x2 > _x1 and _y2 > _y1:
+                            try:
+                                import cv2 as _cv2
+                                _hsv = _cv2.cvtColor(_img[_y1:_y2, _x1:_x2], _cv2.COLOR_BGR2HSV)
+                                _h = _cv2.calcHist([_hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
+                                _cv2.normalize(_h, _h)
+                                if ref_hist is None:
+                                    ref_hist = _h
+                                else:
+                                    ref_hist = ref_hist * (ref_hist_count / (ref_hist_count + 1)) + _h * (1.0 / (ref_hist_count + 1))
+                                ref_hist_count += 1
+                            except Exception:
+                                pass
                 p_bbox = candidates[0]["bbox"]
                 p_track_id = candidates[0].get("track_id")
                 p_fid = fid
@@ -1033,6 +1067,32 @@ def _resolve_merge_conflicts(
                         # Gaussian in log-ratio space (sigma=0.5 → ±50% area = 0.78 score)
                         size_score = _math.exp(-0.5 * (_math.log(ratio) ** 2) / (0.5 ** 2))
 
+                    # Color histogram similarity to reference skier appearance
+                    color_score = 0.5  # neutral default
+                    if w_color > 0.0 and ref_hist is not None and not det.get("of_synthetic") and frame_dir is not None and seg_frames is not None:
+                        _img = _color_frame_cache.get(fid)
+                        if _img is None:
+                            try:
+                                import cv2 as _cv2
+                                _fp = frame_dir / seg_frames[fid]["frame_file"]
+                                _img = _cv2.imread(str(_fp))
+                            except Exception:
+                                _img = None
+                            _color_frame_cache[fid] = _img
+                        if _img is not None:
+                            _bx = det["bbox"]
+                            _x1, _y1, _x2, _y2 = max(0, _bx[0]), max(0, _bx[1]), min(_img.shape[1], _bx[2]), min(_img.shape[0], _bx[3])
+                            if _x2 > _x1 and _y2 > _y1:
+                                try:
+                                    import cv2 as _cv2
+                                    _hsv = _cv2.cvtColor(_img[_y1:_y2, _x1:_x2], _cv2.COLOR_BGR2HSV)
+                                    _cand_h = _cv2.calcHist([_hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
+                                    _cv2.normalize(_cand_h, _cand_h)
+                                    _corr = float(_cv2.compareHist(ref_hist, _cand_h, _cv2.HISTCMP_CORREL))
+                                    color_score = (_corr + 1.0) / 2.0  # map [-1,1] → [0,1]
+                                except Exception:
+                                    pass
+
                     # During genuine conflicts: apply per-axis multipliers
                     if is_conflict and of_pred_cx is not None:
                         effective_of_weight = w_of_agreement * conflict_of_multiplier
@@ -1050,6 +1110,7 @@ def _resolve_merge_conflicts(
                         + effective_of_weight * of_agreement
                         + effective_velocity * vel_score
                         + w_size * size_score
+                        + w_color * color_score
                     )
                     if combined > best_score:
                         second_best_score = best_score
