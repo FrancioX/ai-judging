@@ -10,6 +10,7 @@ dependencies = [
     "opencv-python>=4.8.0",
     "torch>=2.1.0",
     "torchvision>=0.16.0",
+    "kornia>=0.7.0",
     # 3D Pose Lifting
     "einops>=0.7.0",
     # Person segmentation (YOLO)
@@ -26,6 +27,8 @@ dependencies = [
     # Utilities
     "scipy>=1.11.0",
     "pyyaml>=6.0",
+    "lapx>=0.9.4",
+    "cotracker",
 ]
 
 [project.scripts]
@@ -37,6 +40,9 @@ dev-dependencies = [
     "pytest>=8.0.0",
     "ruff>=0.5.0",
 ]
+
+[tool.uv.sources]
+cotracker = { git = "https://github.com/facebookresearch/co-tracker.git" }
 
 [build-system]
 requires = ["hatchling"]
