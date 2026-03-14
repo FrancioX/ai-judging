@@ -262,6 +262,24 @@ CoTracker ran on the 293-frame gap (frames 403→697) but immediately returned N
 
 **Conclusion:** Rejected. Arno +5.6px regression. Root cause: Arno is invisible in all 133 trailing frames (frames 1294–1426). OF cannot track an invisible person — it drifts significantly from the true position over 133 frames. The "copy farthest" method (static last detection at frame 1293) is better because it at least stays near the last known ground truth position. Reverted to `flow_max_extrapolate_frames: 30`.
 
+## Iter 14 — Phase C: Kalman re-init after long gaps (`kalman_reinit_gap: 50`) (2026-03-14)
+
+**Hypothesis:** After a long aerial gap (≥50 frames) filled by OF, the Kalman's velocity/acceleration state will be corrupted by OF-tracked background motion. Re-initialising the Kalman state at the first post-gap detection should prevent this corruption from influencing the post-gap trajectory.
+
+**Implementation:** `kalman_reinit_gap: 50`. Affects Arno's 293-frame gap and all 5 of Quentin's gaps (all ≥62 frames). Pure config change.
+
+**Results (mini-set):**
+
+| Video | Baseline err (px) | New err (px) | Δ err |
+|-------|:-----------------:|:------------:|:-----:|
+| Arno Vuarnier | 35.3 | 35.3 | 0.0 |
+| Andreas Bakke | 8.4 | 8.4 | 0.0 |
+| Jonatan Laland | 4.8 | 4.8 | 0.0 |
+| Quentin Puydenus | 13.6 | 13.6 | 0.0 |
+| **Mean** | **15.5** | **15.5** | **0.0** |
+
+**Conclusion:** Null result. Rejected. The Kalman smoother is not the bottleneck — consistent with Iters 7, 10 from the prior loop. Even with re-init after long aerial gaps, the trajectory is unchanged. The high `r_interp_pos: 40.0` noise weight already effectively "softens" the Kalman's trust in gap-fill positions, preventing state corruption. Reverted to `kalman_reinit_gap: 0`.
+
 ---
 
 ## Iter 13 — Phase B: force linear interpolation for all internal gaps (`of_min_gap_for_fill: 1000`) (2026-03-14)
