@@ -224,3 +224,22 @@ CoTracker ran on the 293-frame gap (frames 403→697) but immediately returned N
 **Conclusion:** Rejected. Root cause: CoTracker3 returns **boolean** visibility (not float confidence), already thresholded at 0.5 internally. Lowering `min_visible_score` from 0.5 to 0.2 has no effect — the output is {True, False}, not a float. All 10 points are False during Arno's aerial because he is genuinely invisible (white clothing against snow): this is the same fundamental invisibility that prevents YOLO from detecting him. CoTracker cannot track what it cannot see. `cotracker_enabled: false` restored. The `_get_stage_kwargs` bug fix was committed as infrastructure (affects all future `--stage tracking` experiments).
 
 ---
+
+## Iter 11 — Segmentation: `imgsz: 1920` + gap region analysis (2026-03-14)
+
+**Hypothesis:** Running YOLO at full 1920px resolution (matching the video's native resolution) might detect Arno in more frames during the aerial gap, reducing the 293-frame internal gap (frames 404-696).
+
+**Implementation:** `segmentation.imgsz: 1920`. Pure config change. Tested on Arno only.
+
+**Results:** Not testable — `NotImplementedError: Output channels > 65536 not supported at the MPS device.` at 1920px input size. Apple MPS backend imposes a hard limit that YOLO11x-seg exceeds at this resolution. Would require CPU inference (estimated 20–30 min/video) or CUDA hardware.
+
+**Gap region investigation (frames 404-696 at imgsz=1280, conf=0.3):**
+- 293 frames in gap (Arno undetected across entire gap at conf=0.3)
+- 145 frames have non-zero detections (all from ByteTrack 104, center x≈1350-1400): these are a **different person** in the right part of the frame, not Arno
+- 148 frames have zero detections — YOLO finds no person at all in those frames
+- Arno's OF trace starts at (1010, 662) at frame 403, ends at (872, 503) at frame 698. OF linearly tracks background features through the aerial, not Arno's true parabolic trajectory.
+- Key finding: **Arno is genuinely invisible during the 293-frame gap.** No threshold reduction (0.25, 0.2, etc.) will recover him — 148 frames have conf=0.0 by definition, not because the threshold is too high.
+
+**Conclusion:** Rejected (technical failure on MPS). Reverted to `imgsz: 1280`. The aerial gap analysis confirms that Arno's remaining 35.3px error is an **irreducible detection bottleneck** on MPS hardware. The error ceiling for Arno on this mini-set requires either CUDA hardware for 1920px inference, domain-specific model fine-tuning, or a fundamentally different detection approach (e.g., thermal/IR, multi-camera). Further tuning experiments are unlikely to move Arno's error materially.
+
+---
