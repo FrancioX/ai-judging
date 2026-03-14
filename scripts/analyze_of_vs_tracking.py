@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-VIDEO_STEM = "VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86"
+VIDEO_STEM = "Ski Men_3_86_Lach Powell"
 OF_JSON = Path(f"output/optical_flow_precision/{VIDEO_STEM}/trace_data.json")
 TK_JSON = Path(f"output/tracking/{VIDEO_STEM}/tracking.json")
 

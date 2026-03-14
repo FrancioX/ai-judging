@@ -28,13 +28,10 @@ set -euo pipefail
 for gt in annotations/tracking/*/gt_centers.csv; do
   stem="$(basename "$(dirname "$gt")")"
   video=""
-  for base in raw_videos raw_videos_snowboard; do
-    cand="$base/${stem}.mp4"
-    if [[ -f "$cand" ]]; then
-      video="$cand"
-      break
-    fi
-  done
+  cand="raw_videos/${stem}.mp4"
+  if [[ -f "$cand" ]]; then
+    video="$cand"
+  fi
   if [[ -z "$video" ]]; then
     echo "Missing video for stem: $stem" >&2
     continue

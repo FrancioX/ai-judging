@@ -75,7 +75,7 @@ All 24+ tunable tracking parameters live under the `tracking:` key in [config.ya
 ## Test Video Reference
 
 When the user refers to "the test video" or "example video", they mean:
-`VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89.mp4`
+`Ski Men_2_89_Andreas Bakke.mp4`
 
 Pre-processed outputs for all stages are available in `output/`.
 
@@ -112,16 +112,16 @@ Chosen to cover the full difficulty range (Exp 21a stats).
 
 | Sport | Athlete | Video stem | Mean Err (px) | HOTA |
 |-------|---------|------------|:---:|:---:|
-| Ski | Andreas Bakke | `VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89` | 8.7 | 0.932 |
-| Ski | Lach Powell | `VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86` | 9.2 | 0.931 |
-| Ski | Emile Peizerat | `VERBIER FREERIDE WEEK QUALIFIER 4__11_Ski Men_Emile Peizerat_76_France_74.83_` | 15.7 | 0.858 |
-| Ski | Jordan Koch | `VERBIER FREERIDE WEEK QUALIFIER 4__10_Ski Men_Jordan Koch_56_Switzerland_75_` | 42.6 | 0.777 |
-| Ski | Gabin Leonard | `VERBIER FREERIDE WEEK QUALIFIER 4__12_Ski Men_Gabin Leonard_26_France_74_` | 58.5 | 0.867 |
-| Snowboard | Jonatan Laland | `VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_` | 4.6 | 0.955 |
-| Snowboard | Adriano Cardillo | `VERBIER FREERIDE WEEK QUALIFIER 4__12_Snowboard Men_Adriano Cardillo_63_Switzerland_52.33_` | 9.8 | 0.913 |
-| Snowboard | Cedric Giraudeau | `VERBIER FREERIDE WEEK QUALIFIER 4__10_Snowboard Men_Cedric Giraudeau_67_France_54.33_` | 13.1 | 0.906 |
-| Snowboard | Quentin Puydenus | `VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_` | 47.8 | 0.753 |
-| Snowboard | Theodor Salen | `VERBIER FREERIDE WEEK QUALIFIER 4__15_Snowboard Men_Theodor Salen_59_Norway_45_` | 54.6 | 0.777 |
+| Ski | Andreas Bakke | `Ski Men_2_89_Andreas Bakke` | 8.7 | 0.932 |
+| Ski | Lach Powell | `Ski Men_3_86_Lach Powell` | 9.2 | 0.931 |
+| Ski | Emile Peizerat | `Ski Men_11_74.83_Emile Peizerat` | 15.7 | 0.858 |
+| Ski | Jordan Koch | `Ski Men_10_75_Jordan Koch` | 42.6 | 0.777 |
+| Ski | Gabin Leonard | `Ski Men_12_74_Gabin Leonard` | 58.5 | 0.867 |
+| Snowboard | Jonatan Laland | `Snowboard Men_16_40_Jonatan Laland` | 4.6 | 0.955 |
+| Snowboard | Adriano Cardillo | `Snowboard Men_12_52.33_Adriano Cardillo` | 9.8 | 0.913 |
+| Snowboard | Cedric Giraudeau | `Snowboard Men_10_54.33_Cedric Giraudeau` | 13.1 | 0.906 |
+| Snowboard | Quentin Puydenus | `Snowboard Men_17_35_Quentin Puydenus` | 47.8 | 0.753 |
+| Snowboard | Theodor Salen | `Snowboard Men_15_45_Theodor Salen` | 54.6 | 0.777 |
 
 ### 4-video mini set (2 ski + 2 snowboard)
 
@@ -129,10 +129,10 @@ Maximum contrast: one easy + one hard per sport. Use for the fastest sanity-chec
 
 | Sport | Athlete | Video stem | Mean Err (px) | HOTA |
 |-------|---------|------------|:---:|:---:|
-| Ski | Andreas Bakke | `VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89` | 8.7 | 0.932 |
-| Ski | Arno Vuarnier | `VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33` | 47.9 | 0.734 |
-| Snowboard | Jonatan Laland | `VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_` | 4.6 | 0.955 |
-| Snowboard | Quentin Puydenus | `VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_` | 47.8 | 0.753 |
+| Ski | Andreas Bakke | `Ski Men_2_89_Andreas Bakke` | 8.7 | 0.932 |
+| Ski | Arno Vuarnier | `Ski Men_1_91.33_Arno Vuarnier` | 47.9 | 0.734 |
+| Snowboard | Jonatan Laland | `Snowboard Men_16_40_Jonatan Laland` | 4.6 | 0.955 |
+| Snowboard | Quentin Puydenus | `Snowboard Men_17_35_Quentin Puydenus` | 47.8 | 0.753 |
 
 ## Experiment Logging
 
@@ -154,6 +154,8 @@ Start when the user says "run an experiment loop" or similar phrasing. The loop 
 
 ### Setup
 1. Create a new git worktree + branch named `exp-loop-YYYYMMDD` (today's date) and work exclusively inside it for the duration of the loop. Leave it in place when the loop ends so the user can review the full commit history.
+   - **NEVER create symlinks** inside the worktree that point to shared data directories (`output/`, `raw_videos/`, `annotations/`). These directories are gitignored in the main repo; if a symlink with one of those names is committed to the worktree branch and later merged into main, git will silently overwrite the real directory with the symlink, destroying the data.
+   - **Before squash-merging a worktree branch into main**, always run `git diff main...HEAD --name-only --diff-filter=A` on the worktree branch and verify there are no symlinks (mode 120000) or files that shadow gitignored paths.
 2. Create a dedicated directory for this loop at `experiments/loop-YYYYMMDD/`. It must contain exactly three files, created at the times indicated:
    - `plan.md` — written at **loop start**: one-paragraph goal statement, focus area, candidate list, and baseline metrics.
    - `log.md` — written **incrementally**: all experiment entries appended after each iteration. Do not append to `experiment_log.md`.

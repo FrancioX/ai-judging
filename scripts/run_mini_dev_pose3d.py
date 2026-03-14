@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 
 MINI_SET_STEMS = [
-    "VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89",
-    "VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33",
-    "VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_",
-    "VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_",
+    "Ski Men_2_89_Andreas Bakke",
+    "Ski Men_1_91.33_Arno Vuarnier",
+    "Snowboard Men_16_40_Jonatan Laland",
+    "Snowboard Men_17_35_Quentin Puydenus",
 ]
 
 DEFAULT_STAGES = ["tracking", "pose_2d", "pose_3d", "visualization"]
@@ -56,7 +56,7 @@ def main() -> None:
     args = parser.parse_args()
 
     workspace = Path(__file__).resolve().parents[1]
-    roots = [workspace / "raw_videos", workspace / "raw_videos_snowboard"]
+    roots = [workspace / "raw_videos"]
 
     failures: list[str] = []
     for stem in MINI_SET_STEMS:

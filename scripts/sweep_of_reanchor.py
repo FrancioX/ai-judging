@@ -18,12 +18,12 @@ import time
 from pathlib import Path
 
 VIDEOS = [
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33", "Arno", 47.9, 0.734),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89", "Andreas", 8.7, 0.932),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_", "Jonatan", 4.6, 0.955),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_", "Quentin", 45.2, 0.753),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__10_Ski Men_Jordan Koch_56_Switzerland_75_", "Jordan", 42.6, 0.777),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__12_Ski Men_Gabin Leonard_26_France_74_", "Gabin", 58.6, 0.869),
+    ("Ski Men_1_91.33_Arno Vuarnier", "Arno", 47.9, 0.734),
+    ("Ski Men_2_89_Andreas Bakke", "Andreas", 8.7, 0.932),
+    ("Snowboard Men_16_40_Jonatan Laland", "Jonatan", 4.6, 0.955),
+    ("Snowboard Men_17_35_Quentin Puydenus", "Quentin", 45.2, 0.753),
+    ("Ski Men_10_75_Jordan Koch", "Jordan", 42.6, 0.777),
+    ("Ski Men_12_74_Gabin Leonard", "Gabin", 58.6, 0.869),
 ]
 
 RESULTS_PATH = Path("output/sweep_of_reanchor_results.json")

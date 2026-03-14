@@ -10,16 +10,16 @@ import time
 from pathlib import Path
 
 DEV_VIDEOS = [
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89", "Andreas", 8.7, 0.932),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86", "Lach", 9.2, 0.931),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__11_Ski Men_Emile Peizerat_76_France_74.83_", "Emile", 15.7, 0.858),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__10_Ski Men_Jordan Koch_56_Switzerland_75_", "Jordan", 42.6, 0.777),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__12_Ski Men_Gabin Leonard_26_France_74_", "Gabin", 58.5, 0.867),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_", "Jonatan", 4.6, 0.955),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__12_Snowboard Men_Adriano Cardillo_63_Switzerland_52.33_", "Adriano", 9.8, 0.913),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__10_Snowboard Men_Cedric Giraudeau_67_France_54.33_", "Cedric", 13.1, 0.906),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_", "Quentin", 47.8, 0.753),
-    ("VERBIER FREERIDE WEEK QUALIFIER 4__15_Snowboard Men_Theodor Salen_59_Norway_45_", "Theodor", 54.6, 0.777),
+    ("Ski Men_2_89_Andreas Bakke", "Andreas", 8.7, 0.932),
+    ("Ski Men_3_86_Lach Powell", "Lach", 9.2, 0.931),
+    ("Ski Men_11_74.83_Emile Peizerat", "Emile", 15.7, 0.858),
+    ("Ski Men_10_75_Jordan Koch", "Jordan", 42.6, 0.777),
+    ("Ski Men_12_74_Gabin Leonard", "Gabin", 58.5, 0.867),
+    ("Snowboard Men_16_40_Jonatan Laland", "Jonatan", 4.6, 0.955),
+    ("Snowboard Men_12_52.33_Adriano Cardillo", "Adriano", 9.8, 0.913),
+    ("Snowboard Men_10_54.33_Cedric Giraudeau", "Cedric", 13.1, 0.906),
+    ("Snowboard Men_17_35_Quentin Puydenus", "Quentin", 47.8, 0.753),
+    ("Snowboard Men_15_45_Theodor Salen", "Theodor", 54.6, 0.777),
 ]
 
 RESULTS_PATH = Path("output/eval_dev_set_results.json")

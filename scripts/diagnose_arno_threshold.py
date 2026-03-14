@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 
-ARNO_STEM = "VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33"
+ARNO_STEM = "Ski Men_1_91.33_Arno Vuarnier"
 GT_PATH = Path("annotations/tracking") / ARNO_STEM / "gt_centers.csv"
 SEG_MANIFEST = Path("output/segmentation") / ARNO_STEM / "segmentation.json"
 FRAME_DIR = Path("output/frames") / ARNO_STEM

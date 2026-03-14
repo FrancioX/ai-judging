@@ -15,19 +15,19 @@ from pathlib import Path
 
 VIDEOS = [
     (
-        "VERBIER FREERIDE WEEK QUALIFIER 4__1_Ski Men_Arno Vuarnier_58_Switzerland_91.33",
+        "Ski Men_1_91.33_Arno Vuarnier",
         "Arno",
     ),
     (
-        "VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89",
+        "Ski Men_2_89_Andreas Bakke",
         "Andreas",
     ),
     (
-        "VERBIER FREERIDE WEEK QUALIFIER 4__16_Snowboard Men_Jonatan Laland_61_Norway_40_",
+        "Snowboard Men_16_40_Jonatan Laland",
         "Jonatan",
     ),
     (
-        "VERBIER FREERIDE WEEK QUALIFIER 4__17_Snowboard Men_Quentin Puydenus_53_France_35_",
+        "Snowboard Men_17_35_Quentin Puydenus",
         "Quentin",
     ),
 ]

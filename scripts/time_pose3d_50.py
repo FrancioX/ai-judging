@@ -14,7 +14,7 @@ def main() -> None:
         config = yaml.safe_load(f)
     p3d_cfg = config.get("pose_3d", {})
 
-    video_stem = "VERBIER FREERIDE WEEK QUALIFIER 4__2_Ski Men_Andreas Bakke_24_Norway_89"
+    video_stem = "Ski Men_2_89_Andreas Bakke"
     poses_2d_path = Path(f"output/poses_2d/{video_stem}/poses_2d.json")
     poses_2d_50_path = Path(f"output/poses_2d/{video_stem}/poses_2d_50frames.json")
     out_dir = Path(f"output/poses_3d/{video_stem}_50frames")

@@ -83,7 +83,7 @@ import numpy as np
 # Config
 # ---------------------------------------------------------------------------
 VIDEO_STEM = (
-    "VERBIER FREERIDE WEEK QUALIFIER 4__3_Ski Men_Lach Powell_8_New Zealand_86"
+    "Ski Men_3_86_Lach Powell"
 )
 OUTPUT_BASE = Path("output")
 FRAMES_DIR = OUTPUT_BASE / "frames" / VIDEO_STEM
