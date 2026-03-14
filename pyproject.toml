@@ -26,6 +26,7 @@ dependencies = [
     # Utilities
     "scipy>=1.11.0",
     "pyyaml>=6.0",
+    "lapx>=0.9.4",
 ]
 
 [project.scripts]

@@ -50,7 +50,7 @@ tracking:
   optical_flow_method: "auto" # auto (sparse LK + dense fallback) | sparse | dense | none
   of_gap_fill_enabled: true   # when false: OF trace still runs for Phase A merge scoring, but Phase B gap-fill uses linear interpolation
   of_min_gap_for_fill: 10     # gaps shorter than this use linear interpolation instead of OF (0 = always use OF)
-  of_drift_guard_px: 200.0    # if OF result drifts >N px from linear interpolation, fall back to linear (0 = disabled)
+  of_drift_guard_px: 400.0    # if OF result drifts >N px from linear interpolation, fall back to linear (0 = disabled)
   of_reanchor_min_conf: 0.0   # min detection confidence for OF trace re-anchoring in Phase A multi-candidate mode (0 = no filter)
   of_trace_filter_enabled: false  # when false: Phase A OF trace used only as soft score signal — hard proximity gate disabled
   flow_max_extrapolate_frames: 30  # max frames to extrapolate via OF for leading/trailing gaps
@@ -82,6 +82,8 @@ tracking:
   cotracker_min_gap: 20             # only re-fill gaps >= this length with CoTracker3
   cotracker_resize_h: 320           # resize frames to this height for CoTracker3 inference
   kalman_reinit_gap: 0              # Phase C: re-init Kalman state after gaps >= this length (0 = disabled)
+  of_trace_single_cand_reanchor: false  # Phase A: restrict OF trace re-anchoring to single-candidate frames only
+  of_trace_bidirectional: false         # Phase A: blend forward + backward OF traces (Iter 2: tested, slight regression +0.6px, disabled)
 
 # 2D pose estimation (YOLO-Pose)
 pose_2d:

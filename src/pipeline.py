@@ -633,6 +633,8 @@ def run_pipeline(
             kalman_reinit_gap=trk_cfg.get("kalman_reinit_gap", 0),
             w_size=trk_cfg.get("w_size", 0.0),
             w_color=trk_cfg.get("w_color", 0.0),
+            of_trace_single_cand_reanchor=trk_cfg.get("of_trace_single_cand_reanchor", False),
+            of_trace_bidirectional=trk_cfg.get("of_trace_bidirectional", False),
         )
         pose_manifest = track_manifest_path
 

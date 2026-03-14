@@ -93,6 +93,8 @@ def track_skier(
     kalman_reinit_gap: int = 0,
     w_size: float = 0.0,
     w_color: float = 0.0,
+    of_trace_single_cand_reanchor: bool = False,
+    of_trace_bidirectional: bool = False,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -361,8 +363,47 @@ def track_skier(
                 reanchor_interval=5,
                 reanchor_min_conf=of_reanchor_min_conf,
                 max_drift_px=150.0,
+                single_cand_reanchor=of_trace_single_cand_reanchor,
             )
             print(f"  → OF trace: {len(preliminary_of_trace)} frames")
+
+            # Bidirectional trace: build a second trace seeded from the last
+            # single-candidate frame and propagated backward. This trace never
+            # re-anchors in multi-candidate frames, so it is immune to bystander
+            # lock-on caused by a wrong forward-trace seed.
+            if of_trace_bidirectional and preliminary_of_trace:
+                single_cand_fids = sorted(
+                    fid for fid, dets in frame_candidates.items()
+                    if len(dets) == 1
+                )
+                if single_cand_fids:
+                    last_sc_fid = single_cand_fids[-1]
+                    last_sc_obs = frame_candidates[last_sc_fid][0]
+                    bwd_seed = {
+                        "frame_id": last_sc_fid,
+                        "bbox": last_sc_obs["bbox"],
+                    }
+                    backward_trace = _build_of_trace(
+                        n_frames, img_w, img_h,
+                        frame_dir, seg_frames,
+                        shared_frame_cache,
+                        frame_candidates=frame_candidates,
+                        seed_obs=bwd_seed,
+                        method=optical_flow_method,
+                        min_keypoints=flow_min_keypoints,
+                        max_reanchor_dist_px=0.0,  # no re-anchoring — pure OF backward
+                        reanchor_interval=999999,
+                        reanchor_min_conf=1.1,      # impossible threshold — never re-anchors
+                        max_drift_px=0.0,
+                        single_cand_reanchor=False,
+                    )
+                    # Blend: average forward + backward predictions where both exist
+                    for fid in list(preliminary_of_trace):
+                        if fid in backward_trace:
+                            fx, fy = preliminary_of_trace[fid]
+                            bx, by = backward_trace[fid]
+                            preliminary_of_trace[fid] = ((fx + bx) / 2, (fy + by) / 2)
+                    print(f"  → Bidirectional blend: {len(backward_trace)} backward frames merged")
 
         selected_obs, conflict_stats = _resolve_merge_conflicts(
             frame_candidates, cx, cy, max_dist, w_conf, w_center,
@@ -1871,6 +1912,7 @@ def _build_of_trace(
     reanchor_interval: int = 5,
     reanchor_min_conf: float = 0.5,
     max_drift_px: float = 200.0,
+    single_cand_reanchor: bool = False,
 ) -> dict[int, tuple[float, float]]:
     """Build a unified optical-flow trace with configurable re-anchoring policy.
 
@@ -1992,6 +2034,8 @@ def _build_of_trace(
         """
         if not use_candidates or fid not in frame_candidates:
             return None
+        if single_cand_reanchor and len(frame_candidates[fid]) != 1:
+            return None  # only re-anchor at unambiguous single-candidate frames
         best_cx, best_cy, best_dist = 0.0, 0.0, float("inf")
         for det in frame_candidates[fid]:
             if reanchor_min_conf > 0.0 and det.get("confidence", 0.0) < reanchor_min_conf:
