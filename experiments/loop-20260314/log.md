@@ -243,3 +243,23 @@ CoTracker ran on the 293-frame gap (frames 403→697) but immediately returned N
 **Conclusion:** Rejected (technical failure on MPS). Reverted to `imgsz: 1280`. The aerial gap analysis confirms that Arno's remaining 35.3px error is an **irreducible detection bottleneck** on MPS hardware. The error ceiling for Arno on this mini-set requires either CUDA hardware for 1920px inference, domain-specific model fine-tuning, or a fundamentally different detection approach (e.g., thermal/IR, multi-camera). Further tuning experiments are unlikely to move Arno's error materially.
 
 ---
+
+## Iter 12 — Phase B: `flow_max_extrapolate_frames: 200` for full trailing gap coverage (2026-03-14)
+
+**Hypothesis:** Arno's trailing gap (frames 1294–1426, 133 frames) currently uses OF for only the first 30 frames, then copies the last bbox. Extending to 200 would use OF for all 133 trailing frames, potentially following Arno's true trajectory better than a static copy.
+
+**Implementation:** `flow_max_extrapolate_frames: 200`. Pure config change.
+
+**Results (mini-set):**
+
+| Video | Baseline err (px) | New err (px) | Δ err | Baseline HOTA | New HOTA | Δ HOTA |
+|-------|:-----------------:|:------------:|:-----:|:-------------:|:--------:|:------:|
+| Arno Vuarnier | 35.3 | 40.9 | **+5.6** | 0.848 | 0.848 | 0.000 |
+| Andreas Bakke | 8.4 | 8.4 | 0.0 | 0.935 | 0.935 | 0.000 |
+| Jonatan Laland | 4.8 | 4.8 | 0.0 | 0.954 | 0.954 | 0.000 |
+| Quentin Puydenus | 13.6 | 13.6 | 0.0 | 0.892 | 0.892 | 0.000 |
+| **Mean** | **15.5** | **16.9** | **+1.4** | **0.907** | **0.907** | **0.000** |
+
+**Conclusion:** Rejected. Arno +5.6px regression. Root cause: Arno is invisible in all 133 trailing frames (frames 1294–1426). OF cannot track an invisible person — it drifts significantly from the true position over 133 frames. The "copy farthest" method (static last detection at frame 1293) is better because it at least stays near the last known ground truth position. Reverted to `flow_max_extrapolate_frames: 30`.
+
+---
