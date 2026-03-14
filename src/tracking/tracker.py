@@ -84,6 +84,15 @@ def track_skier(
     cmc_exclude_margin: float = 1.5,
     cmc_min_features: int = 20,
     cmc_ransac_threshold: float = 3.0,
+    cotracker_enabled: bool = False,
+    cotracker_min_gap: int = 20,
+    cotracker_resize_h: int = 320,
+    conflict_of_multiplier: float = 3.0,
+    conflict_stickiness_multiplier: float = 0.2,
+    conflict_velocity_multiplier: float = 1.0,
+    kalman_reinit_gap: int = 0,
+    w_size: float = 0.0,
+    w_color: float = 0.0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -331,11 +340,15 @@ def track_skier(
             and _HAS_NUMPY
         )
         if use_flow_for_merge:
-            # Seed from the best track's first detection
-            best_track_obs_list = tracks[track_scores[0][0]]
+            # Seed from the longest track (most detections = most likely main subject).
+            # The longest track is more robust than the highest-scoring track as a
+            # seed because a bystander with high confidence may outscore the main
+            # skier on quality alone, causing the OF trace to follow the wrong person.
+            seed_tid = max(tracks, key=lambda t: len(tracks[t]))
+            best_track_obs_list = tracks[seed_tid]
             seed_obs = best_track_obs_list[0] if best_track_obs_list else None
             print(f"  Building OF trace for merge (seed: track "
-                  f"{track_scores[0][0]}, {len(frame_candidates)} frames with detections)…")
+                  f"{seed_tid} [longest={len(best_track_obs_list)}dets], {len(frame_candidates)} frames with detections)…")
             preliminary_of_trace = _build_of_trace(
                 n_frames, img_w, img_h,
                 frame_dir, seg_frames,
@@ -356,6 +369,8 @@ def track_skier(
             w_continuity=w_continuity,
             w_track_stickiness=w_track_stickiness,
             w_velocity=w_velocity,
+            w_size=w_size,
+            w_color=w_color,
             vel_history_len=vel_history_len,
             of_synthetic_confidence=of_synthetic_confidence,
             frame_dir=frame_dir,
@@ -364,6 +379,9 @@ def track_skier(
             flow_min_keypoints=flow_min_keypoints,
             of_trace=preliminary_of_trace or None,
             of_trace_filter_enabled=of_trace_filter_enabled,
+            conflict_of_multiplier=conflict_of_multiplier,
+            conflict_stickiness_multiplier=conflict_stickiness_multiplier,
+            conflict_velocity_multiplier=conflict_velocity_multiplier,
         )
         candidate_pool_stats["conflict_summary"] = conflict_stats
 
@@ -552,6 +570,21 @@ def track_skier(
     )
 
     # ------------------------------------------------------------------
+    # Phase B.1 — CoTracker3 long-gap re-fill (optional)
+    # ------------------------------------------------------------------
+    if cotracker_enabled:
+        from src.tracking.cotracker_fill import fill_long_gaps_cotracker, load_cotracker
+        ct_model = load_cotracker(device="cpu")
+        if ct_model is not None:
+            print(f"  CoTracker3: re-filling gaps >= {cotracker_min_gap} frames")
+            fill_long_gaps_cotracker(
+                frame_bboxes, img_w, img_h,
+                frame_dir, seg_frames, ct_model,
+                min_gap=cotracker_min_gap,
+                resize_h=cotracker_resize_h,
+            )
+
+    # ------------------------------------------------------------------
     # Phase C — Temporal bbox smoothing
     # ------------------------------------------------------------------
     smoothed_velocities: dict[int, tuple[float, float]] = {}
@@ -559,6 +592,7 @@ def track_skier(
         if use_flow and flow_velocities:
             smoothed_velocities = _smooth_bboxes_velocity_aware(
                 frame_bboxes, n_frames, smooth_window, flow_velocities,
+                kalman_reinit_gap=kalman_reinit_gap,
             )
         else:
             _smooth_bboxes(frame_bboxes, n_frames, smooth_window)
@@ -768,6 +802,8 @@ def _resolve_merge_conflicts(
     w_track_stickiness: float = 0.4,
     w_of_agreement: float = 1.5,
     w_velocity: float = 0.4,
+    w_size: float = 0.0,
+    w_color: float = 0.0,
     vel_history_len: int = 5,
     of_tight_radius_px: float = 150.0,
     of_synthetic_confidence: float = 0.3,
@@ -777,6 +813,9 @@ def _resolve_merge_conflicts(
     flow_min_keypoints: int = 5,
     of_trace: dict[int, tuple[float, float]] | None = None,
     of_trace_filter_enabled: bool = True,
+    conflict_of_multiplier: float = 3.0,
+    conflict_stickiness_multiplier: float = 0.2,
+    conflict_velocity_multiplier: float = 1.0,
 ) -> dict[int, dict]:
     """Pick one detection per frame using optical-flow continuity and track-ID stickiness.
 
@@ -840,6 +879,11 @@ def _resolve_merge_conflicts(
         vel_history: collections.deque[tuple[float, float]] = collections.deque(
             maxlen=vel_history_len,
         )
+        area_history: collections.deque[float] = collections.deque(maxlen=50)
+        # Accumulated reference HSV histogram for appearance-based scoring
+        ref_hist: "np.ndarray | None" = None
+        ref_hist_count: int = 0
+        _color_frame_cache: dict[int, "np.ndarray | None"] = {}
         _conflict_count = 0
         _score_margins: list[float] = []
         _of_available_in_conflict = 0
@@ -894,6 +938,36 @@ def _resolve_merge_conflicts(
                     prev_cx = (p_bbox[0] + p_bbox[2]) / 2
                     prev_cy = (p_bbox[1] + p_bbox[3]) / 2
                     vel_history.append((det_cx - prev_cx, det_cy - prev_cy))
+                b = candidates[0]["bbox"]
+                area = max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
+                area_history.append(area)
+                # Update reference color histogram from this single-candidate frame
+                if w_color > 0.0 and ref_hist_count < 30 and frame_dir is not None and seg_frames is not None:
+                    _img = _color_frame_cache.get(fid)
+                    if _img is None:
+                        try:
+                            import cv2 as _cv2
+                            _fp = frame_dir / seg_frames[fid]["frame_file"]
+                            _img = _cv2.imread(str(_fp))
+                        except Exception:
+                            _img = None
+                        _color_frame_cache[fid] = _img
+                    if _img is not None:
+                        _bx = b
+                        _x1, _y1, _x2, _y2 = max(0, _bx[0]), max(0, _bx[1]), min(_img.shape[1], _bx[2]), min(_img.shape[0], _bx[3])
+                        if _x2 > _x1 and _y2 > _y1:
+                            try:
+                                import cv2 as _cv2
+                                _hsv = _cv2.cvtColor(_img[_y1:_y2, _x1:_x2], _cv2.COLOR_BGR2HSV)
+                                _h = _cv2.calcHist([_hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
+                                _cv2.normalize(_h, _h)
+                                if ref_hist is None:
+                                    ref_hist = _h
+                                else:
+                                    ref_hist = ref_hist * (ref_hist_count / (ref_hist_count + 1)) + _h * (1.0 / (ref_hist_count + 1))
+                                ref_hist_count += 1
+                            except Exception:
+                                pass
                 p_bbox = candidates[0]["bbox"]
                 p_track_id = candidates[0].get("track_id")
                 p_fid = fid
@@ -981,20 +1055,62 @@ def _resolve_merge_conflicts(
                             vel_history, cand_vx, cand_vy,
                         )
 
-                    # During genuine conflicts: OF dominates, stickiness reduced
+                    # Bbox area consistency: reward candidates whose area matches
+                    # the historical skier bbox area (bystanders are often smaller)
+                    size_score = 0.5  # neutral default
+                    if w_size > 0.0 and len(area_history) >= 5:
+                        import math as _math
+                        mean_area = sum(area_history) / len(area_history)
+                        b = det["bbox"]
+                        det_area = max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
+                        ratio = det_area / mean_area
+                        # Gaussian in log-ratio space (sigma=0.5 → ±50% area = 0.78 score)
+                        size_score = _math.exp(-0.5 * (_math.log(ratio) ** 2) / (0.5 ** 2))
+
+                    # Color histogram similarity to reference skier appearance
+                    color_score = 0.5  # neutral default
+                    if w_color > 0.0 and ref_hist is not None and not det.get("of_synthetic") and frame_dir is not None and seg_frames is not None:
+                        _img = _color_frame_cache.get(fid)
+                        if _img is None:
+                            try:
+                                import cv2 as _cv2
+                                _fp = frame_dir / seg_frames[fid]["frame_file"]
+                                _img = _cv2.imread(str(_fp))
+                            except Exception:
+                                _img = None
+                            _color_frame_cache[fid] = _img
+                        if _img is not None:
+                            _bx = det["bbox"]
+                            _x1, _y1, _x2, _y2 = max(0, _bx[0]), max(0, _bx[1]), min(_img.shape[1], _bx[2]), min(_img.shape[0], _bx[3])
+                            if _x2 > _x1 and _y2 > _y1:
+                                try:
+                                    import cv2 as _cv2
+                                    _hsv = _cv2.cvtColor(_img[_y1:_y2, _x1:_x2], _cv2.COLOR_BGR2HSV)
+                                    _cand_h = _cv2.calcHist([_hsv], [0, 1], None, [18, 16], [0, 180, 0, 256])
+                                    _cv2.normalize(_cand_h, _cand_h)
+                                    _corr = float(_cv2.compareHist(ref_hist, _cand_h, _cv2.HISTCMP_CORREL))
+                                    color_score = (_corr + 1.0) / 2.0  # map [-1,1] → [0,1]
+                                except Exception:
+                                    pass
+
+                    # During genuine conflicts: apply per-axis multipliers
                     if is_conflict and of_pred_cx is not None:
-                        effective_of_weight = w_of_agreement * 3.0
-                        effective_stickiness = w_track_stickiness * 0.2
+                        effective_of_weight = w_of_agreement * conflict_of_multiplier
+                        effective_stickiness = w_track_stickiness * conflict_stickiness_multiplier
+                        effective_velocity = w_velocity * conflict_velocity_multiplier
                     else:
                         effective_of_weight = w_of_agreement
                         effective_stickiness = w_track_stickiness
+                        effective_velocity = w_velocity
 
                     combined = (
                         quality
                         + w_continuity * continuity
                         + effective_stickiness * stickiness
                         + effective_of_weight * of_agreement
-                        + w_velocity * vel_score
+                        + effective_velocity * vel_score
+                        + w_size * size_score
+                        + w_color * color_score
                     )
                     if combined > best_score:
                         second_best_score = best_score
@@ -2194,6 +2310,7 @@ def _smooth_bboxes_velocity_aware(
     n_frames: int,
     window: int,
     flow_velocities: dict[int, tuple[float, float]],
+    kalman_reinit_gap: int = 0,
 ) -> dict[int, tuple[float, float]]:
     """Smooth bboxes using a Kalman filter with constant acceleration model.
 
@@ -2280,7 +2397,8 @@ def _smooth_bboxes_velocity_aware(
     vx0, vy0 = flow_velocities.get(sorted_ids[0], (0.0, 0.0))
 
     x = np.array([cx0, cy0, vx0, vy0, 0.0, 0.0, w0, h0])
-    P = np.diag([5.0, 5.0, 25.0, 25.0, 100.0, 100.0, 10.0, 10.0])
+    P_init = np.diag([5.0, 5.0, 25.0, 25.0, 100.0, 100.0, 10.0, 10.0])
+    P = P_init.copy()
 
     I_ns = np.eye(NS)
 
@@ -2289,6 +2407,10 @@ def _smooth_bboxes_velocity_aware(
     P_fwd: list[np.ndarray] = []
     x_pred_store: list[np.ndarray] = []
     P_pred_store: list[np.ndarray] = []
+
+    # Indices where Kalman state was re-initialised (segment boundaries)
+    reinit_indices: set[int] = set()
+    consec_interp: int = 0
 
     # --- Forward Kalman filter --------------------------------------------
     for i, fid in enumerate(sorted_ids):
@@ -2323,6 +2445,15 @@ def _smooth_bboxes_velocity_aware(
         is_det = frame_bboxes[fid].get("detected", False)
         R_cur = R_det if is_det else R_interp
 
+        # Kalman segment re-init: after a long gap, restart from current detection
+        if kalman_reinit_gap > 0 and is_det and consec_interp >= kalman_reinit_gap:
+            vx_seed, vy_seed = flow_velocities.get(fid, (0.0, 0.0))
+            x_pred = np.array([z[0], z[1], vx_seed, vy_seed, 0.0, 0.0, z[2], z[3]])
+            P_pred = P_init.copy()
+            reinit_indices.add(i)
+
+        consec_interp = 0 if is_det else consec_interp + 1
+
         y = z - H @ x_pred
         S = H @ P_pred @ H.T + R_cur
         K = P_pred @ H.T @ np.linalg.inv(S)
@@ -2348,6 +2479,10 @@ def _smooth_bboxes_velocity_aware(
     x_smooth[-1] = x_fwd[-1].copy()
 
     for i in range(n - 2, -1, -1):
+        # Don't propagate backward across a re-init boundary
+        if (i + 1) in reinit_indices:
+            x_smooth[i] = x_fwd[i].copy()
+            continue
         P_pred = P_pred_store[i + 1]
         try:
             G = P_fwd[i] @ F.T @ np.linalg.inv(P_pred)

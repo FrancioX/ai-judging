@@ -71,6 +71,17 @@ tracking:
   cmc_exclude_margin: 1.5           # exclude N× skier bbox area from feature matching (background only)
   cmc_min_features: 20              # minimum matched features for valid homography (fallback to none)
   cmc_ransac_threshold: 3.0         # RANSAC outlier threshold in pixels for homography
+  conflict_of_multiplier: 1.0       # OF weight multiplier during Phase A genuine conflicts (was 3.0, reduced Iter 5)
+  conflict_stickiness_multiplier: 1.0  # Stickiness weight multiplier during Phase A genuine conflicts (was 0.2)
+  conflict_velocity_multiplier: 1.0  # Velocity weight multiplier during Phase A genuine conflicts
+  w_size: 0.0                        # Phase A: bbox area consistency score weight (0 = disabled)
+  w_color: 0.0                       # Phase A: HSV color histogram similarity weight (0 = disabled)
+  r_det_pos: 4.0                     # Phase C Kalman: position noise for detected frames (lower = trust more)
+  r_interp_pos: 40.0                 # Phase C Kalman: position noise for interpolated frames (higher = trust less)
+  cotracker_enabled: false          # Phase B.1: CoTracker3 offline joint-trajectory fill for long gaps
+  cotracker_min_gap: 20             # only re-fill gaps >= this length with CoTracker3
+  cotracker_resize_h: 320           # resize frames to this height for CoTracker3 inference
+  kalman_reinit_gap: 0              # Phase C: re-init Kalman state after gaps >= this length (0 = disabled)
 
 # 2D pose estimation (YOLO-Pose)
 pose_2d:
