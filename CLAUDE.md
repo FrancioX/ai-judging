@@ -138,6 +138,13 @@ Maximum contrast: one easy + one hard per sport. Use for the fastest sanity-chec
 
 For **manual experiments** (outside of a loop), log results by appending an entry to [experiments/experiment_log.md](experiments/experiment_log.md). Each entry must include: date, goal (one-sentence hypothesis), implementation summary, results table (per-video `mean_error_px` + `HOTA` with delta vs previous best), and conclusion. Use sub-entries (3a, 3b, …) for iterative tuning. Update the "Current Best" section when a new best is achieved.
 
+Two global files track the state of all experimentation across loops and manual runs:
+
+- `experiments/tried.md` — everything that has been tried, organised by pipeline area, with a one-line outcome for each.
+- `experiments/backlog.md` — everything not yet tried or worth revisiting, organised by pipeline area, with a brief rationale for each candidate.
+
+Update both files at the end of every experiment loop (when writing `summary.md`) and after every manual experiment entry. `backlog.md` should be kept current: remove items that have been tried and add new candidates surfaced during experiments.
+
 For **experiment loops**, each loop writes to its own dedicated directory — see the Experiment Loop section below.
 
 ## Experiment Loop
@@ -150,7 +157,7 @@ Start when the user says "run an experiment loop" or similar phrasing. The loop 
 2. Create a dedicated directory for this loop at `experiments/loop-YYYYMMDD/`. It must contain exactly three files, created at the times indicated:
    - `plan.md` — written at **loop start**: one-paragraph goal statement, focus area, candidate list, and baseline metrics.
    - `log.md` — written **incrementally**: all experiment entries appended after each iteration. Do not append to `experiment_log.md`.
-   - `summary.md` — written at **loop end**: what was done (accepted changes + final metrics), what was not done (rejected/untried candidates with root-cause notes), and suggested next steps.
+   - `summary.md` — written at **loop end**: what was done (accepted changes + final metrics), what was not done (rejected/untried candidates with root-cause notes), and suggested next steps. After writing this file, update `experiments/tried.md` and `experiments/backlog.md`.
 3. Note any context the user provides at startup:
    - **Focus area** — which pipeline stage to improve (e.g., tracking).
    - **Candidate list** — potential improvements to try.
