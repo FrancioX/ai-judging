@@ -4,6 +4,26 @@ Candidates not yet tried, or partially tried with clear remaining angles. Ordere
 
 ---
 
+## Venue Mapping
+
+**Annotate more videos (mini set or dev set)**
+- Rationale: Only 1 video has venue GT annotations. Broader validation needed to confirm 30px LOO is representative.
+- Effort: 15 annotations × N videos via `scripts/annotate_venue.py` (~3 min/video)
+
+**Integrate `run_venue_mapping` into `src/pipeline.py` as stage 7**
+- Rationale: `src/venue/venue_mapping.py` is ready but not wired into the main pipeline.
+- Effort: 1 hour
+
+**Extend tracking to full video run (>990 frames)**
+- Rationale: Tracking stops at frame 990 for this video; GT extends to 1370. Tracking-guided interpolation could help for frames 990-1370 if tracking data were available.
+- Effort: Investigate why tracking stops early; may be a pipeline cutoff
+
+**Optimal annotation placement vs. uniform spacing**
+- Rationale: Sparsity test used evenly-spaced annotations. Placing 5 annotations at path inflection points (where the athlete turns or accelerates) could improve LOO accuracy vs. uniform placement with the same budget.
+- Effort: 0.5 day
+
+---
+
 ## Tracking
 
 ### High priority — segmentation (easy wins remaining)

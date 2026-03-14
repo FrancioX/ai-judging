@@ -91,6 +91,21 @@ Everything that has been attempted across all experiment loops and manual runs. 
 
 ---
 
+## Venue Mapping
+
+| # | Experiment | Loop | Outcome | Result |
+|---|-----------|------|:-------:|--------|
+| Venue v1 | LoFTR feature matching (video frame → venue image) | loop-20260314-venue | Rejected | 538px mean error; snow scenes have insufficient texture; only 1-2 keyframes accepted at any threshold |
+| Venue v2 | Global homography from tracking-center correspondences | loop-20260314-venue | Rejected | 143px; camera motion makes global (cx,cy)→(vx,vy) inconsistent |
+| Venue v3 (linear) | GT-anchored linear interpolation | loop-20260314-venue | **Accepted** (baseline) | 0px non-LOO, 31.6px LOO mean; standard eval trivially 0 since evaluator uses same interpolation |
+| Venue v3 (tracking) | GT-anchored tracking arc-length interpolation | loop-20260314-venue | Rejected | Fails outside tracking range: 264-369px for frames 990+ |
+| Venue v3 (PCHIP + linear-trend extrapolation) | PCHIP interpolation + linear-trend at endpoints | loop-20260314-venue | **Accepted** (current best) | 3.4px non-LOO, **30.3px LOO mean, 86.7% within 50px** |
+| Sparsity test | 1-15 GT annotations (evenly spaced) | loop-20260314-venue | Analysis | 5 annotations → 27px mean, 100% within 50px; 7 → 11.5px |
+| PCHIP/linear blend | α-sweep between PCHIP and linear | loop-20260314-venue | Rejected | Optimal α=1.0 (pure PCHIP); no improvement from blending |
+| Per-segment similarity transform | 2D similarity transform per GT segment using tracking | loop-20260314-venue | Rejected | 521px mean; tracking motion ≠ venue motion within segment; fails outside tracking range |
+
+---
+
 ## Best Results Achieved
 
 | Target | Config | Mean err (px) | HOTA | Speed (ms/frame) |
