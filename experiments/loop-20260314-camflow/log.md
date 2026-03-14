@@ -91,6 +91,37 @@ configuration.**
 
 ---
 
+## Exp 3 — Multi-scale template matching + SIFT (automatic anchor search)
+
+**Date**: 2026-03-14
+**Hypothesis**: Extract the background gradient image from video frames and search for it in the
+venue image at multiple scales using NCC. Also try SIFT keypoint matching on dark-feature
+(rock/tree) regions restricted by dark mask (V<80, gradient>5).
+
+**Implementation**: `scripts/venue_template.py` — multi-scale NCC on gradient images,
+scale range initially 0.03-0.20 then corrected to 0.15-0.55 (inferred from PCHIP slope
+≈ 0.32 venue px / video px). SIFT with 3000 keypoints on dark-masked frame vs full venue.
+
+**Results**:
+
+| Method | Scale range | Best NCC | GT matches | Mean error |
+|--------|------------|:---:|:---:|:---:|
+| NCC gradient | 0.03-0.20 | 0.70 | 0/24 | 735px |
+| NCC gradient | 0.15-0.55 | 0.49 | 0/24 | 771px |
+| SIFT dark regions | — | — | 2 good matches (RANSAC fails) | — |
+| SIFT full background | — | — | 2 good matches (RANSAC fails) | — |
+
+**Root cause analysis**:
+- NCC always selects minimum scale (0.03 / 0.15) — small templates match noise everywhere, not discriminative
+- SIFT: only 34 keypoints in dark regions per frame, 2 survive Lowe ratio test — near zero overlap
+- Fundamental issue: **broadcast camera and venue image are from different viewpoints**, not just different zoom levels. The same rocks/trees look geometrically different from the two perspectives. Standard feature matching cannot bridge this gap.
+- Snow dominates both images: 94.7% of video frame, 80.7% of venue image have near-zero gradient → template has almost no signal from the right region.
+
+**Conclusion**: Automatic optical matching between telephoto video and wide-angle venue image
+is not feasible with standard methods (NCC, SIFT, LoFTR). **Rejected**.
+
+---
+
 ## Exp 2c — Video output + zoom_correct=False confirmation
 
 **Date**: 2026-03-14
