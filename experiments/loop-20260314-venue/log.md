@@ -126,3 +126,47 @@ Remaining failures:
 - Frame 1370: 60.0px (last GT frame, extrapolation limit)
 
 **Accepted as new best.**
+
+---
+
+## Exp 7 — PCHIP/linear blend (alpha sweep)
+
+**Date**: 2026-03-14
+**Hypothesis**: A convex blend of PCHIP and linear predictions (blended_pred = α·PCHIP + (1-α)·linear) might fix the PCHIP overshoot at frames 750/1150 while keeping PCHIP's advantage at 1250/1350.
+**Implementation**: Computed optimal α over range [0, 1] in 5% steps.
+
+| alpha | LOO mean | LOO P90 | within50px |
+|-------|----------|---------|-----------|
+| 0.0 (linear) | 31.6 | 56.0 | 86.7% |
+| 0.5 | ~30.6 | ~52 | 80.0% |
+| 1.0 (PCHIP) | 30.3 | 48.9 | 86.7% |
+
+**Conclusion**: Optimal α=1.0 (pure PCHIP). No blend improves over pure PCHIP. **Rejected.**
+
+---
+
+## Exp 8 — Per-segment similarity transform (tracking-guided)
+
+**Date**: 2026-03-14
+**Hypothesis**: Fit a 2D similarity transform (scale+rotation+translation) within each GT segment using tracking displacement → venue displacement, to better capture intra-segment path curvature.
+**Implementation**: Within each GT segment [lo,hi], solve [a,-b;b,a]*[track_dx;track_dy]=[venue_dx;venue_dy] and apply to intermediate frame displacements.
+
+| Method | LOO mean | LOO P90 | within50px |
+|--------|----------|---------|-----------|
+| PCHIP (current best) | 30.3 | 48.9 | 86.7% |
+| Similarity transform | 521.8 | 999 | 6.7% |
+
+**Conclusion**: Completely fails. Issues: (1) tracking-to-venue relationship is not consistent within a segment (camera pans); (2) for GT frames outside tracking range (990+), no tracking data available → 999px fallback; (3) tracking displacement is a poor proxy for venue displacement at 100-frame scale. **Rejected.**
+
+---
+
+## Final Best
+
+**Method**: PCHIP interpolation + linear-trend extrapolation (`src/venue/venue_mapping.py`)
+
+| Metric | Score |
+|--------|-------|
+| Standard eval (single video) | 3.4 px mean, 100% within 50px |
+| LOO cross-validation | 30.3 px mean, 86.7% within 50px |
+| vs. LoFTR baseline | −508 px (−94%) |
+
