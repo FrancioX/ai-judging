@@ -262,6 +262,18 @@ CoTracker ran on the 293-frame gap (frames 403→697) but immediately returned N
 
 **Conclusion:** Rejected. Arno +5.6px regression. Root cause: Arno is invisible in all 133 trailing frames (frames 1294–1426). OF cannot track an invisible person — it drifts significantly from the true position over 133 frames. The "copy farthest" method (static last detection at frame 1293) is better because it at least stays near the last known ground truth position. Reverted to `flow_max_extrapolate_frames: 30`.
 
+## Iter 15 — Phase A: disable synthetic OF candidates (`of_synthetic_confidence: 0.0`) (2026-03-14)
+
+**Hypothesis:** Synthetic OF candidates (confidence=0.3 predicted-position phantom detections) in Phase A conflict resolution might reinforce the wrong track in bystander-lock cases. Disabling them might improve accuracy where OF-predicted positions coincide with a bystander's location.
+
+**Implementation:** `of_synthetic_confidence: 0.0`. Pure config change.
+
+**Results (mini-set):** Identical to baseline (15.5px / 0.907 HOTA, all per-video results unchanged).
+
+**Conclusion:** Null result. For the mini-set, Arno and Quentin have large gaps with zero detections — no inter-track conflicts arise during those gaps, so synthetic OF candidates have no effect. Andreas and Jonatan have zero gaps and are tracked cleanly regardless. Reverted to `of_synthetic_confidence: 0.3`. This parameter may matter for dev-set bystander-lock cases (Gabin Leonard), where it should be tested after the dev-set evaluation.
+
+---
+
 ## Iter 14 — Phase C: Kalman re-init after long gaps (`kalman_reinit_gap: 50`) (2026-03-14)
 
 **Hypothesis:** After a long aerial gap (≥50 frames) filled by OF, the Kalman's velocity/acceleration state will be corrupted by OF-tracked background motion. Re-initialising the Kalman state at the first post-gap detection should prevent this corruption from influencing the post-gap trajectory.
