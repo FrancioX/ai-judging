@@ -87,6 +87,7 @@ def track_skier(
     cotracker_enabled: bool = False,
     cotracker_min_gap: int = 20,
     cotracker_resize_h: int = 320,
+    cotracker_min_visible_score: float = 0.5,
     conflict_of_multiplier: float = 3.0,
     conflict_stickiness_multiplier: float = 0.2,
     conflict_velocity_multiplier: float = 1.0,
@@ -623,6 +624,7 @@ def track_skier(
                 frame_dir, seg_frames, ct_model,
                 min_gap=cotracker_min_gap,
                 resize_h=cotracker_resize_h,
+                min_visible_score=cotracker_min_visible_score,
             )
 
     # ------------------------------------------------------------------

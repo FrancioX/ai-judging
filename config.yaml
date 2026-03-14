@@ -81,6 +81,7 @@ tracking:
   cotracker_enabled: false          # Phase B.1: CoTracker3 offline joint-trajectory fill for long gaps
   cotracker_min_gap: 20             # only re-fill gaps >= this length with CoTracker3
   cotracker_resize_h: 320           # resize frames to this height for CoTracker3 inference
+  cotracker_min_visible_score: 0.2  # per-point visibility threshold for CoTracker (lowered from 0.5, but CoTracker returns boolean — no effect)
   kalman_reinit_gap: 0              # Phase C: re-init Kalman state after gaps >= this length (0 = disabled)
   of_trace_single_cand_reanchor: false  # Phase A: restrict OF trace re-anchoring to single-candidate frames only
   of_trace_bidirectional: false         # Phase A: blend forward + backward OF traces (Iter 2: tested, slight regression +0.6px, disabled)

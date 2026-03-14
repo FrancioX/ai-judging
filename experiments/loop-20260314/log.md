@@ -202,3 +202,25 @@ Arno detected frames with "largest": 862 (vs 872 with "center"). 10 fewer detect
 **Conclusion:** Null result. Rejected. Guard=200 uniquely bad (prematurely falls back to linear interpolation when OF is correctly tracking). Guards 0, 300–600 are all identical — with conf=0.3, OF gap-fill never drifts >300px from linear for Arno's or Quentin's aerial gaps, so the guard never triggers above 300. Current 400px is in the flat optimal zone. Key insight: Arno's 35.3px error is the best achievable via LK optical flow on the current 565-frame aerial gap — the drift guard is no longer the bottleneck.
 
 ---
+
+## Iter 10 — Phase B: CoTracker3 with lower `min_visible` threshold (2026-03-14)
+
+**Hypothesis:** Loop13 Iter 4 rejected CoTracker3 because all tracked points had visibility <0.5. Since CoTracker3 returns float confidence scores, lowering the threshold to 0.2 might allow partial trajectory reconstruction during Arno's 293-frame internal aerial gap.
+
+**Implementation:**
+- Installed CoTracker3 (`uv add git+https://github.com/facebookresearch/co-tracker.git`)
+- Added `cotracker_min_visible_score` parameter to `cotracker_fill.py`, `tracker.py`, and `pipeline.py`
+- Fixed pre-existing bug: `_get_stage_kwargs("tracking")` did not forward CoTracker/conflict/Kalman parameters when using `--stage tracking`; all these parameters were silently defaulting to their hardcoded values. Fixed by adding them to the returned dict.
+- Set `cotracker_enabled: true`, `cotracker_min_visible_score: 0.2`
+
+**Results (Arno only, the target for CoTracker):**
+
+| Video | Baseline err | CoTracker err | Δ err |
+|-------|:-----------:|:-------------:|:-----:|
+| Arno Vuarnier | 35.3 | 35.3 | 0.0 |
+
+CoTracker ran on the 293-frame gap (frames 403→697) but immediately returned None: at frame 404 (t=1), all 10 tracked keypoints had visibility=False. The gap was not re-filled.
+
+**Conclusion:** Rejected. Root cause: CoTracker3 returns **boolean** visibility (not float confidence), already thresholded at 0.5 internally. Lowering `min_visible_score` from 0.5 to 0.2 has no effect — the output is {True, False}, not a float. All 10 points are False during Arno's aerial because he is genuinely invisible (white clothing against snow): this is the same fundamental invisibility that prevents YOLO from detecting him. CoTracker cannot track what it cannot see. `cotracker_enabled: false` restored. The `_get_stage_kwargs` bug fix was committed as infrastructure (affects all future `--stage tracking` experiments).
+
+---

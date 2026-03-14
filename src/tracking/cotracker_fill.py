@@ -54,6 +54,7 @@ def fill_long_gaps_cotracker(
     *,
     min_gap: int = 20,
     resize_h: int = 320,
+    min_visible_score: float = 0.5,
 ) -> None:
     """Replace LK fill with CoTracker3 for detected gaps >= min_gap (in-place).
 
@@ -97,6 +98,7 @@ def fill_long_gaps_cotracker(
             model, frame_dir, seg_frames,
             a_id, b_id, a_box, b_box,
             img_w, img_h, resize_h=resize_h,
+            min_visible_score=min_visible_score,
         )
 
         if result is not None:
@@ -126,6 +128,7 @@ def _fill_one_gap(
     *,
     resize_h: int = 320,
     min_visible: int = 2,
+    min_visible_score: float = 0.5,
 ) -> dict[int, list[int]] | None:
     """Fill one internal gap [a_id+1 … b_id-1] using CoTracker3.
 
@@ -196,7 +199,7 @@ def _fill_one_gap(
         tracks_t = pred_tracks[0, t_idx]  # [N, 2]
         vis_t = pred_vis[0, t_idx]         # [N]
 
-        vis_mask = vis_t > 0.5
+        vis_mask = vis_t > min_visible_score
         if int(vis_mask.sum()) < min_visible:
             return None  # too many points lost — trust LK fill more
 

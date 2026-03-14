@@ -180,6 +180,18 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "cmc_exclude_margin": trk_cfg.get("cmc_exclude_margin", 1.5),
             "cmc_min_features": trk_cfg.get("cmc_min_features", 20),
             "cmc_ransac_threshold": trk_cfg.get("cmc_ransac_threshold", 3.0),
+            "cotracker_enabled": trk_cfg.get("cotracker_enabled", False),
+            "cotracker_min_gap": trk_cfg.get("cotracker_min_gap", 20),
+            "cotracker_resize_h": trk_cfg.get("cotracker_resize_h", 320),
+            "cotracker_min_visible_score": trk_cfg.get("cotracker_min_visible_score", 0.5),
+            "conflict_of_multiplier": trk_cfg.get("conflict_of_multiplier", 3.0),
+            "conflict_stickiness_multiplier": trk_cfg.get("conflict_stickiness_multiplier", 0.2),
+            "conflict_velocity_multiplier": trk_cfg.get("conflict_velocity_multiplier", 1.0),
+            "kalman_reinit_gap": trk_cfg.get("kalman_reinit_gap", 0),
+            "w_size": trk_cfg.get("w_size", 0.0),
+            "w_color": trk_cfg.get("w_color", 0.0),
+            "of_trace_single_cand_reanchor": trk_cfg.get("of_trace_single_cand_reanchor", False),
+            "of_trace_bidirectional": trk_cfg.get("of_trace_bidirectional", False),
         }
     elif stage_name == "pose_2d":
         p2d_cfg = config.get("pose_2d", {})
@@ -627,6 +639,7 @@ def run_pipeline(
             cotracker_enabled=trk_cfg.get("cotracker_enabled", False),
             cotracker_min_gap=trk_cfg.get("cotracker_min_gap", 20),
             cotracker_resize_h=trk_cfg.get("cotracker_resize_h", 320),
+            cotracker_min_visible_score=trk_cfg.get("cotracker_min_visible_score", 0.5),
             conflict_of_multiplier=trk_cfg.get("conflict_of_multiplier", 3.0),
             conflict_stickiness_multiplier=trk_cfg.get("conflict_stickiness_multiplier", 0.2),
             conflict_velocity_multiplier=trk_cfg.get("conflict_velocity_multiplier", 1.0),
