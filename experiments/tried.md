@@ -58,6 +58,7 @@ Everything that has been attempted across all experiment loops and manual runs. 
 | Loop13 Iter 2 | Sweep `of_drift_guard_px` (50/100/150/200) | loop-20260313 | Rejected | Monotonically worse as tightened; OF is better than linear even during aerials |
 | Loop13 Iter 3 | Camera motion compensation (ORB, ECC) | loop-20260313 | Rejected | +2.2px regression; background features latch onto sky/snow textures; ECC 2× slower for no gain |
 | Loop13 Iter 4 | CoTracker3 for long-gap Phase B.1 fill (min_gap=20) | loop-20260313 | Rejected | Completely flat; all 10 tracked points fell back to LK (visibility <0.5 during aerials) |
+| Loop14 Iter 10 | CoTracker3 with lower `min_visible_score: 0.2` | loop-20260314 | Rejected | CoTracker3 returns binary {0,1} visibility (internally thresholded at 0.5); `min_visible_score` below 0.5 has no effect |
 
 ### Phase C — Kalman Smoothing
 
@@ -66,6 +67,11 @@ Everything that has been attempted across all experiment loops and manual runs. 
 | Exp 6 | Kalman smoothing in no-OF mode (`smooth_window=5`) | loop-01 | **Accepted** | −1.8px, slightly faster; kept as Phase C foundation |
 | Loop13 Iter 7 | Kalman segment re-init at long-gap boundaries (OC-SORT style) | loop-20260313 | Rejected | Null; error is in Phase B positions, not Kalman propagation; existing 10× R_interp/R_det already suppresses backward RTS |
 | Loop13 Iter 10 | Kalman noise tuning (`r_interp_pos` 40→200) | loop-20260313 | Rejected | Completely flat; smoother is not the bottleneck; does not change gap-fill trajectory |
+| Loop14 Iter 3 | `of_drift_guard_px: 400` (raised from 200→400) | loop-20260314 | **Accepted** | −11.1px mini-set; prevents premature OF→linear fallback |
+| Loop14 Iter 12 | `flow_max_extrapolate_frames: 200` for trailing gaps | loop-20260314 | Rejected | Arno +5.6px; OF drifts badly in trailing invisible gaps; static copy is better |
+| Loop14 Iter 13 | `of_min_gap_for_fill: 1000` (force linear interp for all internal gaps) | loop-20260314 | Rejected | +3.9px mean; bidirectional OF blending outperforms linear by 12.6px for Arno's 293-frame gap |
+| Loop14 Iter 14 | `kalman_reinit_gap: 50` (OC-SORT style re-init) | loop-20260314 | Null | Completely flat; high r_interp_pos already prevents gap-fill corruption |
+| Loop14 Iter 15 | `of_synthetic_confidence: 0.0` (disable synthetic OF candidates) | loop-20260314 | Null on mini-set | No conflicts during large aerial gaps; untested on Gabin Leonard bystander-lock |
 
 ### No-OF / Speed Track
 
@@ -75,9 +81,19 @@ Everything that has been attempted across all experiment loops and manual runs. 
 
 ---
 
+## Segmentation
+
+| # | Experiment | Loop | Outcome | Result |
+|---|-----------|------|:-------:|--------|
+| Loop14 Iters 4–7 | `segmentation.confidence: 0.3` (lowered from 0.5) | loop-20260314 | **Accepted** | −13.2px dev-set (50% reduction); Jordan Koch 42.6→9.9px, Theodor Salen 54.6→9.2px, Quentin 47.8→13.6px |
+| Loop14 Iter 8 | `select_strategy: "largest"` vs `"center"` | loop-20260314 | Null | Identical at conf=0.3; single largest detection per frame is same as highest-confidence selection |
+| Loop14 Iter 11 | `imgsz: 1920` for YOLO11x-seg | loop-20260314 | Failed (MPS) | `NotImplementedError: Output channels > 65536` on Apple Silicon; requires CUDA or CPU (20–30 min/video) |
+
+---
+
 ## Best Results Achieved
 
 | Target | Config | Mean err (px) | HOTA | Speed (ms/frame) |
 |--------|--------|:---:|:---:|:---:|
-| **Accuracy-best** | Exp 21a + Loop13 Iter 5 | 26.2 (dev-10) | 0.867 | ~45.0 |
+| **Accuracy-best** | Loop14 (conf=0.3, drift_guard=400) | 13.0 (dev-10) | 0.924 | ~45.0 |
 | **Speed-best** | Exp 15 (adaptive threshold, no OF) | 25.5 (18-video) | 0.856 | 6.05 |

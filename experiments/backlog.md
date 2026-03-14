@@ -6,6 +6,19 @@ Candidates not yet tried, or partially tried with clear remaining angles. Ordere
 
 ## Tracking
 
+### High priority — segmentation (easy wins remaining)
+
+**`imgsz: 1920` for YOLO11x-seg (requires CUDA hardware)**
+- Rationale: Loop14 Iter 11 confirmed imgsz=1920 fails on MPS (`Output channels > 65536`). On CUDA, this should recover Arno's 293-frame invisible gap and similar cases. Arno: 35.3px → potentially 15–25px.
+- Expected effort: 0.5 days (config change only; requires GPU node)
+- Note: Arno has 148 frames with conf=0.0 even at 1920px, so ceiling is not zero. But 145 frames were detecting a different person; full resolution might recover some of those.
+
+**Full 18-video evaluation with current best config**
+- Rationale: Loop14 achieved 13.0px / 0.924 HOTA on 10-video dev-set. Need to verify on all 18 videos to establish a reliable aggregate and identify any remaining failure cases not in the dev-set.
+- Expected effort: 0.5 days (run frames+segmentation+tracking for 8 remaining videos)
+
+---
+
 ### High priority — appearance / identity (known bottleneck)
 
 **OSNet / FastReID appearance embeddings (Phase A soft scoring signal)**
@@ -13,8 +26,12 @@ Candidates not yet tried, or partially tried with clear remaining angles. Ordere
 - Expected effort: 3–5 days (model integration + fine-tuning on competition footage)
 - Note: `w_color` infrastructure already wired in `tracker.py`; can be repurposed.
 
+**`of_synthetic_confidence: 0.0` for bystander-lock cases**
+- Rationale: Loop14 Iter 15 found null on mini-set (no conflicts in aerial gaps). But for Gabin Leonard's bystander lock, synthetic OF candidates may reinforce the wrong track. Worth testing on the full dev-set specifically for Gabin.
+- Expected effort: 0.5 days (config change, run Gabin tracking + evaluate)
+
 **Pose plausibility scoring (inline YOLO-Pose on Phase A candidates)**
-- Rationale: Bystanders who are standing still or facing away will have clearly different pose keypoints from an active skier. Could break Gabin Leonard's conflict loop without requiring ReID training data.
+- Rationale: Bystanders who are standing still or facing away will have clearly different pose keypoints from an active skier. Could break Gabin Leonard's conflict loop without requiring ReID training data. Gabin's 52.2px is the main remaining outlier.
 - Expected effort: 2–3 days
 - Note: More complex than initially proposed; requires per-candidate crop inference at conflict frames.
 
@@ -25,10 +42,8 @@ Candidates not yet tried, or partially tried with clear remaining angles. Ordere
 - Expected effort: 5–7 days
 - Note: CoTracker3 (Iter 4) failed because visibility scores drop below 0.5 during aerials. Try SAMURAI as the alternative for zero-shot aerial tracking. Also worth retrying CoTracker3 with a lower `min_visible` threshold before committing to SAMURAI.
 
-**CoTracker3 with lower `min_visible` threshold**
-- Rationale: Iter 4 rejected CoTracker3 with visibility threshold=0.5 (all points fell back to LK). A lower threshold (e.g. 0.2–0.3) may allow partial trajectory reconstruction during aerial occlusion.
-- Expected effort: 0.5 days (config/param sweep, infrastructure already exists)
-- Note: Fast to try before committing to the heavier SAMURAI approach.
+**CoTracker3 with lower `min_visible` threshold** ~~DONE — Null~~
+- Loop14 Iter 10 confirmed: CoTracker3 returns binary {0,1} visibility (internally thresholded). Lowering min_visible_score has no effect. Athletes are genuinely invisible during aerials — CoTracker cannot track what is not visible.
 
 ### Medium priority — global optimization
 
@@ -38,17 +53,13 @@ Candidates not yet tried, or partially tried with clear remaining angles. Ordere
 
 ### Medium priority — smoothing / interpolation
 
-**Savitzky-Golay smoothing for gap interpolation**
-- Rationale: Replace linear interpolation with polynomial smoothing for gap filling. Expected 5–10% error reduction on interpolated frames. Low computational cost.
-- Expected effort: 0.5–1 day
-- Note: Kalman smoothing experiments (Iter 7, Iter 10) confirmed the smoother is not the bottleneck for OF-derived positions — this candidate is most relevant for short gaps where linear interpolation currently runs, not long aerial phases.
+**Savitzky-Golay smoothing for gap interpolation** ~~DEPRIORITIZED~~
+- Loop14 confirmed: mini-set videos have no short internal gaps (<10 frames). Bidirectional OF blending outperforms linear interpolation even for long aerial gaps (Iter 13: +12.6px for linear vs OF). SG would only help sub-10-frame gaps; these are negligible for the current corpus. Remove from active backlog unless short-gap videos emerge.
 
 ### Low priority — already explored, diminishing returns
 
-**OC-SORT observation-centric Kalman re-init after long gaps**
-- Rationale: Listed as Experiment C in loop-20260313 candidate list. Iter 7 tested a closely related approach (RTS guard at gap boundaries) and found it null. A true OC-SORT re-init (reinitialising the full covariance matrix from the post-gap detection) is slightly different and not yet tried exactly.
-- Expected effort: 1 day
-- Note: Iter 7 and Iter 10 together confirm the Kalman is not the bottleneck; deprioritise unless OF gap-fill quality improves first.
+**OC-SORT observation-centric Kalman re-init after long gaps** ~~DONE — Null~~
+- Loop14 Iter 14 (`kalman_reinit_gap: 50`) confirmed completely null. High `r_interp_pos: 40.0` already prevents gap-fill corruption. Remove from backlog.
 
 ---
 
