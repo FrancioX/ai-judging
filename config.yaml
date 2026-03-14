@@ -113,8 +113,14 @@ pose_3d:
 
 # Visualization
 visualization:
-  render_3d: true
   overlay_2d: true
-  segmentation_boxes: true    # reconstruct video with YOLO segmentation boxes
+  tracking_boxes: true
+  segmentation_boxes: true
+  side_by_side_3d: true
+  side_by_side_h36m_2d: true    # add normalized 2D H36M skeleton panel to the right of the 3D panel
+  plotly_3d: true
+  side_by_side_use_pose_crops: true  # use pose crop images on left panel when available
+  side_by_side_crop_scale: 3.0       # upscale factor for crop-based left panel in side-by-side video
+  render_3d: true               # legacy compatibility flag used as default for 3D toggles
   export_format: "html"         # html (plotly) | ply | obj
   fps: null                    # null = match extraction/original fps

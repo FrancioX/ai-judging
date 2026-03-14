@@ -339,6 +339,40 @@ def _get_viz_fps(frame_dir: Path, video_path: Path | None = None) -> float:
     return viz_fps or 30.0
 
 
+def _resolve_pose_crop_dir(seg_dir: Path, track_manifest: Path | None = None) -> Path | None:
+    """Resolve crops directory used by 2D pose stage when available."""
+    candidate_dirs: list[Path] = []
+    if track_manifest is not None:
+        candidate_dirs.append(track_manifest.parent / "crops")
+    candidate_dirs.append(seg_dir / "crops")
+
+    for candidate in candidate_dirs:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
+
+
+def _apply_visualization_cli_overrides(args: argparse.Namespace, config: dict) -> None:
+    """Apply optional CLI overrides to visualization config."""
+    config.setdefault("visualization", {})
+    viz_cfg = config["visualization"]
+
+    if args.viz_overlay_2d is not None:
+        viz_cfg["overlay_2d"] = args.viz_overlay_2d
+    if args.viz_tracking_boxes is not None:
+        viz_cfg["tracking_boxes"] = args.viz_tracking_boxes
+    if args.viz_segmentation_boxes is not None:
+        viz_cfg["segmentation_boxes"] = args.viz_segmentation_boxes
+    if args.viz_side_by_side_3d is not None:
+        viz_cfg["side_by_side_3d"] = args.viz_side_by_side_3d
+    if args.viz_plotly_3d is not None:
+        viz_cfg["plotly_3d"] = args.viz_plotly_3d
+    if args.viz_use_pose_crops is not None:
+        viz_cfg["side_by_side_use_pose_crops"] = args.viz_use_pose_crops
+    if args.viz_crop_scale is not None:
+        viz_cfg["side_by_side_crop_scale"] = float(args.viz_crop_scale)
+
+
 def run_single_stage(
     stage_name: str, video_path: str | Path, config: dict | None = None
 ) -> None:
@@ -442,17 +476,27 @@ def run_single_stage(
         poses_3d_path = resolved.get("poses_3d_path")
         track_manifest = resolved.get("track_manifest")
         seg_manifest = resolved.get("seg_manifest")
+        seg_dir = resolved.get("seg_dir")
         viz_dir = base_out / "visualizations" / video_stem
         viz_cfg = config.get("visualization", {})
-        render_3d = viz_cfg.get("render_3d", True)
-        export_format = viz_cfg.get("export_format", "html")
+        render_overlay_2d = viz_cfg.get("overlay_2d", True)
+        render_tracking_boxes = viz_cfg.get("tracking_boxes", True)
+        render_segmentation_boxes = viz_cfg.get("segmentation_boxes", True)
+        render_side_by_side_3d = viz_cfg.get("side_by_side_3d", viz_cfg.get("render_3d", True))
+        render_plotly_3d = viz_cfg.get(
+            "plotly_3d",
+            viz_cfg.get("render_3d", True) and viz_cfg.get("export_format", "html") == "html",
+        )
+        use_pose_crops_for_side_by_side = viz_cfg.get("side_by_side_use_pose_crops", True)
+        crop_scale = float(viz_cfg.get("side_by_side_crop_scale", 2.0))
+        include_h36m_2d_panel = viz_cfg.get("side_by_side_h36m_2d", True)
 
         viz_fps = _get_viz_fps(frame_dir, video_path)
 
         viz_dir.mkdir(parents=True, exist_ok=True)
 
         # Render 2D overlay if poses exist
-        if poses_2d_path and poses_2d_path.exists():
+        if render_overlay_2d and poses_2d_path and poses_2d_path.exists():
             print(f"  Rendering 2D pose overlay ({viz_fps:.2f} fps)")
             visualize_2d_overlay(
                 frame_dir,
@@ -463,29 +507,52 @@ def run_single_stage(
                 tracking_manifest_path=track_manifest if track_manifest and track_manifest.exists() else None,
                 fps=viz_fps,
             )
-        else:
+        elif render_overlay_2d:
             print("  2D poses not found; skipping 2D overlay")
 
         # Render tracking boxes if tracking exists
-        if track_manifest and track_manifest.exists():
+        if render_tracking_boxes and track_manifest and track_manifest.exists():
             print(f"  Rendering tracking boxes ({viz_fps:.2f} fps)")
             visualize_tracking_boxes(frame_dir, track_manifest, viz_dir, fps=viz_fps)
-        else:
+        elif render_tracking_boxes:
             print("  Tracking output not found; skipping tracking visualization")
 
         # Render segmentation boxes (always possible if seg exists)
-        if seg_manifest and seg_manifest.exists():
+        if render_segmentation_boxes and seg_manifest and seg_manifest.exists():
             print(f"  Rendering segmentation boxes ({viz_fps:.2f} fps)")
             visualize_segmentation_boxes(frame_dir, seg_manifest, viz_dir, fps=viz_fps)
+        elif render_segmentation_boxes:
+            print("  Segmentation output not found; skipping segmentation visualization")
 
-        if render_3d and poses_3d_path and poses_3d_path.exists():
+        side_by_side_source_dir = frame_dir
+        if use_pose_crops_for_side_by_side and isinstance(seg_dir, Path):
+            crop_dir = _resolve_pose_crop_dir(seg_dir, track_manifest if track_manifest and track_manifest.exists() else None)
+            if crop_dir is not None:
+                side_by_side_source_dir = crop_dir
+
+        if render_side_by_side_3d and poses_3d_path and poses_3d_path.exists():
             print(f"  Rendering 3D side-by-side ({viz_fps:.2f} fps)")
-            visualize_3d_side_by_side(frame_dir, poses_3d_path, viz_dir, fps=viz_fps)
-            if export_format == "html":
-                print("  Rendering interactive 3D HTML")
-                visualize_3d_plotly(poses_3d_path, viz_dir, fps=int(viz_fps))
-        elif render_3d:
-            print("  3D poses not found; skipping 3D visualization")
+            if side_by_side_source_dir != frame_dir:
+                print(f"  Using pose crops for side-by-side video panel: {side_by_side_source_dir}")
+            source_scale = crop_scale if side_by_side_source_dir != frame_dir else 1.0
+            poses_2d_h36m_path = poses_3d_path.parent / "poses_2d_h36m.json"
+            visualize_3d_side_by_side(
+                side_by_side_source_dir,
+                poses_3d_path,
+                viz_dir,
+                fps=viz_fps,
+                source_scale=source_scale,
+                poses_2d_h36m_path=poses_2d_h36m_path,
+                include_h36m_2d_panel=include_h36m_2d_panel,
+            )
+        elif render_side_by_side_3d:
+            print("  3D poses not found; skipping 3D side-by-side visualization")
+
+        if render_plotly_3d and poses_3d_path and poses_3d_path.exists():
+            print("  Rendering interactive 3D HTML")
+            visualize_3d_plotly(poses_3d_path, viz_dir, fps=int(viz_fps))
+        elif render_plotly_3d:
+            print("  3D poses not found; skipping interactive 3D visualization")
 
     print(f"\n{'='*60}")
     print(f"✓ {stage_info['display_name']} complete for {video_path.name}")
@@ -674,30 +741,60 @@ def run_pipeline(
     )
 
     # ── Step 7: 2D Pose Overlay Visualization ──────────────────────────
-    print(f"\n{'='*60}")
-    print(f"Step 7/8 - 2D Pose Overlay Visualization ({viz_fps:.2f} fps)")
-    print(f"{'='*60}")
-    visualize_2d_overlay(
-        frame_dir,
-        poses_2d_path,
-        viz_dir,
-        skeleton=True,
-        draw_bbox=True,
-        fps=viz_fps,
+    viz_cfg = config.get("visualization", {})
+    render_overlay_2d = viz_cfg.get("overlay_2d", True)
+    render_tracking_boxes = viz_cfg.get("tracking_boxes", True)
+    render_side_by_side_3d = viz_cfg.get("side_by_side_3d", viz_cfg.get("render_3d", True))
+    render_plotly_3d = viz_cfg.get(
+        "plotly_3d",
+        viz_cfg.get("render_3d", True) and viz_cfg.get("export_format", "html") == "html",
     )
+    use_pose_crops_for_side_by_side = viz_cfg.get("side_by_side_use_pose_crops", True)
+    crop_scale = float(viz_cfg.get("side_by_side_crop_scale", 2.0))
+    include_h36m_2d_panel = viz_cfg.get("side_by_side_h36m_2d", True)
+
+    if render_overlay_2d:
+        print(f"\n{'='*60}")
+        print(f"Step 7/8 - 2D Pose Overlay Visualization ({viz_fps:.2f} fps)")
+        print(f"{'='*60}")
+        visualize_2d_overlay(
+            frame_dir,
+            poses_2d_path,
+            viz_dir,
+            skeleton=True,
+            draw_bbox=True,
+            fps=viz_fps,
+        )
 
     # ── Step 8: Visualization (Post-Tracking + 3D) ─────────────────────
-    viz_cfg = config.get("visualization", {})
     print(f"\n{'='*60}")
     print(f"Step 8/8 - Visualization (Post-Tracking + 3D) ({viz_fps:.2f} fps)")
     print(f"{'='*60}")
-    if tracking_enabled:
+    if tracking_enabled and render_tracking_boxes:
         visualize_tracking_boxes(frame_dir, track_manifest_path, viz_dir, fps=viz_fps)
 
-    if viz_cfg.get("render_3d", True):
-        visualize_3d_side_by_side(frame_dir, poses_3d_path, viz_dir, fps=viz_fps)
-        if viz_cfg.get("export_format", "html") == "html":
-            visualize_3d_plotly(poses_3d_path, viz_dir, fps=int(viz_fps))
+    side_by_side_source_dir = frame_dir
+    if use_pose_crops_for_side_by_side:
+        crop_dir = _resolve_pose_crop_dir(seg_dir, track_manifest_path if tracking_enabled else None)
+        if crop_dir is not None:
+            side_by_side_source_dir = crop_dir
+
+    if render_side_by_side_3d:
+        if side_by_side_source_dir != frame_dir:
+            print(f"  Using pose crops for side-by-side video panel: {side_by_side_source_dir}")
+        source_scale = crop_scale if side_by_side_source_dir != frame_dir else 1.0
+        visualize_3d_side_by_side(
+            side_by_side_source_dir,
+            poses_3d_path,
+            viz_dir,
+            fps=viz_fps,
+            source_scale=source_scale,
+            poses_2d_h36m_path=pose_3d_dir / "poses_2d_h36m.json",
+            include_h36m_2d_panel=include_h36m_2d_panel,
+        )
+
+    if render_plotly_3d:
+        visualize_3d_plotly(poses_3d_path, viz_dir, fps=int(viz_fps))
 
     print(f"\n{'='*60}")
     print(f"✓ Pipeline complete for {video_path.name}")
@@ -734,6 +831,48 @@ def main():
     parser.add_argument(
         "--test", "-t", action="store_true", help="Quick test mode: 5 fps, 50 frames max"
     )
+    parser.add_argument(
+        "--viz-overlay-2d",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable 2D overlay generation in visualization stage.",
+    )
+    parser.add_argument(
+        "--viz-tracking-boxes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable tracking boxes video generation in visualization stage.",
+    )
+    parser.add_argument(
+        "--viz-segmentation-boxes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable segmentation boxes video generation in visualization stage.",
+    )
+    parser.add_argument(
+        "--viz-side-by-side-3d",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable side-by-side 3D video generation in visualization stage.",
+    )
+    parser.add_argument(
+        "--viz-plotly-3d",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable interactive Plotly 3D HTML generation in visualization stage.",
+    )
+    parser.add_argument(
+        "--viz-use-pose-crops",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable using pose crops on the side-by-side left panel.",
+    )
+    parser.add_argument(
+        "--viz-crop-scale",
+        type=float,
+        default=None,
+        help="Upscale factor for side-by-side left panel when using pose crops (e.g., 2.0).",
+    )
     args = parser.parse_args()
 
     # Validate required arguments for --stage mode
@@ -741,6 +880,7 @@ def main():
         parser.error("--stage requires an explicit video path (positional argument)")
 
     config = load_config(args.config)
+    _apply_visualization_cli_overrides(args, config)
 
     # Override config for quick testing
     if args.test:

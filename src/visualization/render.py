@@ -7,9 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
+from src.pose_3d.keypoint_converter import H36M_SKELETON_CONNECTIONS, get_hip_indices
 
-# COCO skeleton connections for drawing
-SKELETON_CONNECTIONS = [
+
+# COCO skeleton connections for 2D overlay drawing
+SKELETON_CONNECTIONS_2D = [
     (0, 1), (0, 2), (1, 3), (2, 4),        # head
     (5, 6),                                   # shoulders
     (5, 7), (7, 9),                           # left arm
@@ -19,6 +21,9 @@ SKELETON_CONNECTIONS = [
     (11, 13), (13, 15),                       # left leg
     (12, 14), (14, 16),                       # right leg
 ]
+
+# 3D views are rendered in MotionBERT/H36M joint convention.
+SKELETON_CONNECTIONS_3D = H36M_SKELETON_CONNECTIONS
 
 
 def visualize_segmentation_boxes(
@@ -288,7 +293,7 @@ def visualize_2d_overlay(
 
         # Draw skeleton
         if skeleton:
-            for i, j in SKELETON_CONNECTIONS:
+            for i, j in SKELETON_CONNECTIONS_2D:
                 if kpts[i, 2] > 0.3 and kpts[j, 2] > 0.3:
                     pt1 = (int(kpts[i, 0]), int(kpts[i, 1]))
                     pt2 = (int(kpts[j, 0]), int(kpts[j, 1]))
@@ -324,11 +329,13 @@ def visualize_3d_plotly(
 
     frames_data = data["frames"]
     keypoint_names = data.get("keypoint_names", [f"joint_{i}" for i in range(17)])
+    skeleton_connections = _choose_3d_skeleton(keypoint_names)
 
     # Build animation frames
     plotly_frames = []
     for fdata in frames_data:
-        kpts = np.array(fdata["keypoints_3d"])  # (17, 3)
+        kpts = np.array(fdata["keypoints_3d"], dtype=np.float32)  # (17, 3)
+        kpts[:, 1] *= -1.0
         x, y, z = kpts[:, 0], kpts[:, 1], kpts[:, 2]
 
         # Joints as scatter
@@ -344,7 +351,7 @@ def visualize_3d_plotly(
 
         # Skeleton lines
         skeleton_x, skeleton_y, skeleton_z = [], [], []
-        for i, j in SKELETON_CONNECTIONS:
+        for i, j in skeleton_connections:
             skeleton_x += [x[i], x[j], None]
             skeleton_y += [y[i], y[j], None]
             skeleton_z += [z[i], z[j], None]
@@ -360,7 +367,8 @@ def visualize_3d_plotly(
 
     # Initial state (first frame)
     first = frames_data[0]
-    kpts0 = np.array(first["keypoints_3d"])
+    kpts0 = np.array(first["keypoints_3d"], dtype=np.float32)
+    kpts0[:, 1] *= -1.0
 
     fig = go.Figure(
         data=[
@@ -413,8 +421,11 @@ def visualize_3d_side_by_side(
     output_dir: str | Path,
     *,
     fps: float = 30.0,
+    source_scale: float = 1.0,
+    poses_2d_h36m_path: str | Path | None = None,
+    include_h36m_2d_panel: bool = True,
 ) -> Path:
-    """Render source frames and projected 3D skeleton side-by-side to MP4."""
+    """Render source images with 3D (and optional 2D H36M) side panels to MP4."""
     import cv2
     from tqdm import tqdm
 
@@ -422,44 +433,91 @@ def visualize_3d_side_by_side(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    frame_paths = sorted(list(frame_dir.glob("frame_*.jpg")) + list(frame_dir.glob("frame_*.png")))
+    frame_paths = sorted(list(frame_dir.glob("*.jpg")) + list(frame_dir.glob("*.png")))
     if not frame_paths:
         raise FileNotFoundError(f"No frames in {frame_dir}")
 
     with open(poses_3d_path) as f:
         poses_data = json.load(f)
     frames_data = poses_data["frames"]
+    keypoint_names = poses_data.get("keypoint_names", [f"joint_{i}" for i in range(17)])
+    skeleton_connections = _choose_3d_skeleton(keypoint_names)
+
+    frames_2d_h36m = None
+    keypoint_names_2d_h36m: list[str] = []
+    if include_h36m_2d_panel and poses_2d_h36m_path is not None:
+        p2d_h36m_path = Path(poses_2d_h36m_path)
+        if p2d_h36m_path.exists():
+            with open(p2d_h36m_path) as f:
+                h36m_data = json.load(f)
+            frames_2d_h36m = h36m_data.get("frames", [])
+            keypoint_names_2d_h36m = h36m_data.get("keypoint_names", [])
 
     sample = cv2.imread(str(frame_paths[0]))
     if sample is None:
         raise RuntimeError(f"Unable to read first frame: {frame_paths[0]}")
+    source_scale = max(1.0, float(source_scale))
+    if source_scale > 1.0:
+        sample = cv2.resize(
+            sample,
+            (
+                max(1, int(round(sample.shape[1] * source_scale))),
+                max(1, int(round(sample.shape[0] * source_scale))),
+            ),
+            interpolation=cv2.INTER_CUBIC,
+        )
     frame_h, frame_w = sample.shape[:2]
     panel_h, panel_w = frame_h, frame_w
 
     out_path = output_dir / "side_by_side_3d.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"avc1")
-    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (frame_w + panel_w, frame_h))
+    panel_count = 3 if frames_2d_h36m is not None else 2
+    writer = cv2.VideoWriter(str(out_path), fourcc, fps, (frame_w + panel_w * (panel_count - 1), frame_h))
 
     all_kpts = np.array([f["keypoints_3d"] for f in frames_data], dtype=np.float32)
     axis_extent = float(np.max(np.abs(all_kpts))) + 1e-6
 
     frame_count = min(len(frame_paths), len(frames_data))
+    if frames_2d_h36m is not None:
+        frame_count = min(frame_count, len(frames_2d_h36m))
     for idx in tqdm(range(frame_count), total=frame_count, desc="3D Side-by-Side"):
         frame = cv2.imread(str(frame_paths[idx]))
         if frame is None:
             continue
+        if source_scale > 1.0:
+            frame = cv2.resize(
+                frame,
+                (
+                    max(1, int(round(frame.shape[1] * source_scale))),
+                    max(1, int(round(frame.shape[0] * source_scale))),
+                ),
+                interpolation=cv2.INTER_CUBIC,
+            )
         if frame.shape[0] != frame_h or frame.shape[1] != frame_w:
             frame = cv2.resize(frame, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR)
 
         kpts = np.array(frames_data[idx]["keypoints_3d"], dtype=np.float32)
         panel = _render_projected_3d_panel(
             kpts,
+            keypoint_names=keypoint_names,
+            skeleton_connections=skeleton_connections,
             width=panel_w,
             height=panel_h,
             axis_extent=axis_extent,
         )
 
-        composed = cv2.hconcat([frame, panel])
+        if frames_2d_h36m is not None:
+            kpts_2d_h36m = np.array(frames_2d_h36m[idx]["keypoints"], dtype=np.float32)
+            panel_2d = _render_h36m_2d_panel(
+                keypoints_2d=kpts_2d_h36m,
+                keypoint_names=keypoint_names_2d_h36m,
+                skeleton_connections=H36M_SKELETON_CONNECTIONS,
+                width=panel_w,
+                height=panel_h,
+            )
+            composed = cv2.hconcat([frame, panel, panel_2d])
+        else:
+            composed = cv2.hconcat([frame, panel])
         writer.write(composed)
 
     writer.release()
@@ -470,6 +528,8 @@ def visualize_3d_side_by_side(
 def _render_projected_3d_panel(
     keypoints_3d: np.ndarray,
     *,
+    keypoint_names: list[str],
+    skeleton_connections: list[tuple[int, int]],
     width: int,
     height: int,
     axis_extent: float,
@@ -501,7 +561,12 @@ def _render_projected_3d_panel(
     rot = rx @ ry
 
     pts = keypoints_3d.astype(np.float32)
-    center = np.mean(pts[[11, 12]], axis=0, keepdims=True)
+    pts[:, 1] *= -1.0
+    try:
+        left_hip_idx, right_hip_idx = get_hip_indices(keypoint_names)
+    except RuntimeError:
+        left_hip_idx, right_hip_idx = 11, 12
+    center = np.mean(pts[[left_hip_idx, right_hip_idx]], axis=0, keepdims=True)
     pts = pts - center
     pts_rot = (rot @ pts.T).T
 
@@ -525,7 +590,7 @@ def _render_projected_3d_panel(
         e = to_px((rot @ end.T).T)
         cv2.line(canvas, s, e, color, 2)
 
-    for i, j in SKELETON_CONNECTIONS:
+    for i, j in skeleton_connections:
         p1 = to_px(pts_rot[i])
         p2 = to_px(pts_rot[j])
         cv2.line(canvas, p1, p2, (34, 139, 230), 3)
@@ -535,4 +600,69 @@ def _render_projected_3d_panel(
         cv2.circle(canvas, px, 4, (20, 20, 220), -1)
 
     cv2.putText(canvas, "3D Skeleton", (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 60), 2)
+    return canvas
+
+
+def _choose_3d_skeleton(keypoint_names: list[str]) -> list[tuple[int, int]]:
+    """Select skeleton connectivity for the provided keypoint naming convention."""
+    lowered = [name.lower() for name in keypoint_names]
+    if "pelvis" in lowered and "thorax" in lowered:
+        return SKELETON_CONNECTIONS_3D
+    return SKELETON_CONNECTIONS_2D
+
+
+def _render_h36m_2d_panel(
+    keypoints_2d: np.ndarray,
+    *,
+    keypoint_names: list[str],
+    skeleton_connections: list[tuple[int, int]],
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Render a normalized 2D H36M skeleton panel."""
+    import cv2
+
+    canvas = np.full((height, width, 3), 245, dtype=np.uint8)
+    pts = keypoints_2d.astype(np.float32)
+    if pts.shape != (17, 3):
+        cv2.putText(canvas, "2D H36M (invalid)", (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (60, 60, 60), 2)
+        return canvas
+
+    conf_thr = 0.15
+    valid = pts[:, 2] > conf_thr
+    if np.count_nonzero(valid) < 2:
+        cv2.putText(canvas, "2D H36M (no keypoints)", (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (60, 60, 60), 2)
+        return canvas
+
+    xy = pts[:, :2].copy()
+    valid_xy = xy[valid]
+    center = np.mean(valid_xy, axis=0, keepdims=True)
+    xy = xy - center
+
+    extent = np.max(np.abs(valid_xy - center)) + 1e-6
+    scale = (min(width, height) * 0.38) / extent
+
+    origin_x = width // 2
+    origin_y = height // 2
+
+    def to_px(point_xy: np.ndarray) -> tuple[int, int]:
+        x = int(origin_x + point_xy[0] * scale)
+        y = int(origin_y + point_xy[1] * scale)
+        return x, y
+
+    for i, j in skeleton_connections:
+        if pts[i, 2] > conf_thr and pts[j, 2] > conf_thr:
+            p1 = to_px(xy[i])
+            p2 = to_px(xy[j])
+            cv2.line(canvas, p1, p2, (34, 139, 230), 3)
+
+    for k in range(pts.shape[0]):
+        if pts[k, 2] > conf_thr:
+            p = to_px(xy[k])
+            cv2.circle(canvas, p, 4, (20, 20, 220), -1)
+
+    label = "2D H36M"
+    if keypoint_names and len(keypoint_names) == 17:
+        label = "2D H36M Skeleton"
+    cv2.putText(canvas, label, (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 60), 2)
     return canvas

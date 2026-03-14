@@ -15,14 +15,29 @@ from urllib.request import urlretrieve
 
 import numpy as np
 
+from src.pose_3d.keypoint_converter import (
+    H36M_KEYPOINTS_17,
+    convert_keypoints_to_h36m_17,
+    get_hip_indices,
+)
 
-def load_2d_poses(poses_2d_path: str | Path) -> np.ndarray:
-    """Load 2D poses JSON into an (N, 17, 3) array [x, y, confidence]."""
+
+def load_2d_poses(poses_2d_path: str | Path) -> tuple[np.ndarray, list[str], list[int]]:
+    """Load 2D pose manifest into arrays and metadata.
+
+    Returns
+    -------
+    tuple[np.ndarray, list[str], list[int]]
+        (keypoints, keypoint_names, frame_ids) where keypoints has shape
+        (N, 17, 3) in [x, y, confidence] format.
+    """
     with open(poses_2d_path) as f:
         data = json.load(f)
     frames = data["frames"]
     keypoints = np.array([f["keypoints"] for f in frames], dtype=np.float32)
-    return keypoints  # (N, 17, 3)
+    keypoint_names = data.get("keypoint_names", [])
+    frame_ids = [int(f.get("frame_id", i)) for i, f in enumerate(frames)]
+    return keypoints, keypoint_names, frame_ids
 
 
 def lift_to_3d(
@@ -58,8 +73,17 @@ def lift_to_3d(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    kpts_2d = load_2d_poses(poses_2d_path)  # (N, 17, 3)
+    kpts_2d_raw, keypoint_names_raw, frame_ids = load_2d_poses(poses_2d_path)
+    kpts_2d, keypoint_names, did_convert = convert_keypoints_to_h36m_17(
+        kpts_2d_raw,
+        keypoint_names_raw,
+    )
+    hip_indices = get_hip_indices(keypoint_names)
     n_frames = kpts_2d.shape[0]
+
+    if did_convert:
+        print("Converted input keypoints from COCO-17 to H36M-17 for MotionBERT consistency.")
+    _write_2d_h36m_manifest(output_dir, frame_ids, kpts_2d)
 
     print(f"Lifting {n_frames} frames to 3D (model={model_name}, window={receptive_field})")
 
@@ -73,20 +97,21 @@ def lift_to_3d(
             receptive_field=receptive_field,
             model_kwargs=model_kwargs,
             batch_size=batch_size,
+            hip_indices=hip_indices,
         )
     else:
         print(f"Warning: unknown model '{model_name}', using naive baseline lift.")
-        poses_3d = _lift_naive(kpts_2d)
+        poses_3d = _lift_naive(kpts_2d, hip_indices=hip_indices)
 
     # Save results
     out_path = output_dir / "poses_3d.json"
     result = {
         "model": model_name,
         "n_frames": int(poses_3d.shape[0]),
-        "keypoint_names": _load_keypoint_names(poses_2d_path),
+        "keypoint_names": keypoint_names,
         "frames": [
             {
-                "frame_id": i,
+                "frame_id": int(frame_ids[i]),
                 "keypoints_3d": poses_3d[i].tolist(),  # (17, 3)
             }
             for i in range(poses_3d.shape[0])
@@ -105,6 +130,28 @@ def _load_keypoint_names(poses_2d_path: str | Path) -> list[str]:
     return data.get("keypoint_names", [])
 
 
+def _write_2d_h36m_manifest(
+    output_dir: Path,
+    frame_ids: list[int],
+    keypoints_h36m: np.ndarray,
+) -> None:
+    """Write converted 2D keypoints in H36M order for debugging and audits."""
+    out_path = output_dir / "poses_2d_h36m.json"
+    payload = {
+        "keypoint_names": H36M_KEYPOINTS_17,
+        "n_frames": int(keypoints_h36m.shape[0]),
+        "frames": [
+            {
+                "frame_id": int(frame_ids[i]),
+                "keypoints": keypoints_h36m[i].tolist(),
+            }
+            for i in range(keypoints_h36m.shape[0])
+        ],
+    }
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def _lift_motionbert(
     kpts_2d: np.ndarray,
     *,
@@ -115,6 +162,7 @@ def _lift_motionbert(
     receptive_field: int = 243,
     model_kwargs: dict[str, Any] | None = None,
     batch_size: int = 16,
+    hip_indices: tuple[int, int] = (4, 1),
 ) -> np.ndarray:
     """Lift 2D->3D using MotionBERT.
 
@@ -140,8 +188,9 @@ def _lift_motionbert(
     xy = kpts_2d[:, :, :2].copy()
     confidence = kpts_2d[:, :, 2:3]
 
-    # Center on hip midpoint (joints 11, 12 in COCO).
-    hip_center = (xy[:, 11:12, :] + xy[:, 12:13, :]) / 2.0
+    # Center on hip midpoint in the active keypoint convention.
+    left_hip_idx, right_hip_idx = hip_indices
+    hip_center = (xy[:, left_hip_idx:left_hip_idx + 1, :] + xy[:, right_hip_idx:right_hip_idx + 1, :]) / 2.0
     xy = xy - hip_center
 
     # Scale so max extent is approximately 1.
@@ -404,7 +453,11 @@ def _select_center_predictions(output: Any, *, center_index: int) -> np.ndarray:
     return output.detach().cpu().numpy()
 
 
-def _lift_naive(kpts_2d: np.ndarray) -> np.ndarray:
+def _lift_naive(
+    kpts_2d: np.ndarray,
+    *,
+    hip_indices: tuple[int, int] = (4, 1),
+) -> np.ndarray:
     """Baseline: estimate Z from bone lengths heuristic.
 
     This is a simple placeholder — it creates a plausible-looking 3D skeleton
@@ -415,7 +468,8 @@ def _lift_naive(kpts_2d: np.ndarray) -> np.ndarray:
     xy = kpts_2d[:, :, :2].copy()
 
     # Centre on hip midpoint
-    hip_center = (xy[:, 11:12, :] + xy[:, 12:13, :]) / 2.0
+    left_hip_idx, right_hip_idx = hip_indices
+    hip_center = (xy[:, left_hip_idx:left_hip_idx + 1, :] + xy[:, right_hip_idx:right_hip_idx + 1, :]) / 2.0
     xy = xy - hip_center
 
     # Normalise

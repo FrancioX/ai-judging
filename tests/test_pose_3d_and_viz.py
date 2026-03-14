@@ -10,11 +10,12 @@ import numpy as np
 import pytest
 
 from src.pose_3d.lifter import lift_to_3d
+from src.pose_3d.keypoint_converter import COCO_KEYPOINTS_17, H36M_KEYPOINTS_17
 from src.visualization.render import visualize_3d_side_by_side
 
 
 def _write_dummy_poses_2d(path: Path, n_frames: int = 5) -> None:
-    keypoint_names = [f"kp_{i}" for i in range(17)]
+    keypoint_names = COCO_KEYPOINTS_17
     frames = []
     for frame_id in range(n_frames):
         keypoints = []
@@ -60,6 +61,29 @@ def test_lift_to_3d_requires_motionbert_checkpoint(tmp_path: Path) -> None:
             checkpoint_path=None,
             checkpoint_url=None,
         )
+
+
+def test_lift_to_3d_writes_h36m_2d_manifest(tmp_path: Path) -> None:
+    poses_2d_path = tmp_path / "poses_2d.json"
+    out_dir = tmp_path / "poses_3d"
+    _write_dummy_poses_2d(poses_2d_path, n_frames=4)
+
+    out_path = lift_to_3d(
+        poses_2d_path,
+        out_dir,
+        model_name="naive",
+    )
+
+    assert out_path.exists()
+
+    h36m_2d_path = out_dir / "poses_2d_h36m.json"
+    assert h36m_2d_path.exists()
+
+    with open(h36m_2d_path) as f:
+        h36m_data = json.load(f)
+    assert h36m_data["keypoint_names"] == H36M_KEYPOINTS_17
+    assert len(h36m_data["frames"]) == 4
+    assert len(h36m_data["frames"][0]["keypoints"]) == 17
 
 
 def test_visualize_3d_side_by_side_writes_mp4(tmp_path: Path) -> None:
