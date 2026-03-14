@@ -64,9 +64,30 @@ is always known (one fixed anchor per venue).
 
 ## Exp 2b — Production scenario: fixed start anchor
 
-**Pending**: Test with frame 150 GT KEPT as fixed anchor (simulates knowing the start gate
-venue position from competition registration). All other frames are LOO-predicted.
-Expected: Knözinger LOO mean drops from 67px to ~28px; within50px ~90%.
+**Date**: 2026-03-14
+**Hypothesis**: Keep frame 150 (start gate) as a fixed known anchor; hold out all other GT
+frames LOO. Simulates production where start-gate venue position is always known from course
+registration.
+
+**Implementation**: Added `fixed_anchor_fid` parameter to `run_venue_camflow` (and `run_loo_evaluation`).
+Frame 150 is never held out; all 24 other GT frames are evaluated LOO.
+
+| Video | Scenario | n_eval | LOO mean | LOO median | LOO P90 | LOO within 50px |
+|-------|----------|:---:|:---:|:---:|:---:|:---:|
+| Knözinger | Unconstrained LOO | 25 | 67.0px | 25.6px | 62.4px | 88% |
+| Knözinger | Fixed anchor frame 150 | 24 | **28.5px** | **25.2px** | **45.1px** | **92%** |
+
+**Result**: Exactly as predicted. With one fixed anchor (start gate), LOO mean drops from
+67px to 28.5px — nearly matching the (invalid) GT-PCHIP baseline of 30.3px. The 989px outlier
+(frame 150 extrapolation failure) is eliminated.
+
+Remaining elevated errors: frame 1350 (78px) and frame 2350 (71px) — both near-extrapolation
+at end-of-run. These are within the annotation noise floor for a wide-angle venue image.
+
+**Conclusion**: The fixed-anchor production scenario validates the approach. In production,
+the competition start gate position is registered once per venue — this single anchor is
+sufficient to achieve ~28px mean LOO across the full run. **Accepted as the target production
+configuration.**
 
 ---
 

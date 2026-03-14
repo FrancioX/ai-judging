@@ -601,6 +601,7 @@ def run_venue_camflow(
     dark_threshold: int = 80,
     min_gradient: float = 5.0,
     min_dark_pixels: int = 50,
+    fixed_anchor_fid: int | None = None,
     no_video: bool = False,
     verbose: bool = True,
 ) -> dict:
@@ -664,8 +665,13 @@ def run_venue_camflow(
 
     # LOO evaluation (honest)
     if verbose:
-        print("\n[camflow] LOO cross-validation:")
-    loo_res = run_loo_evaluation(cum_flow, frame_ids, gt, venue_w, venue_h, verbose=verbose)
+        anchor_note = f" (fixed anchor: frame {fixed_anchor_fid})" if fixed_anchor_fid is not None else ""
+        print(f"\n[camflow] LOO cross-validation{anchor_note}:")
+    loo_res = run_loo_evaluation(
+        cum_flow, frame_ids, gt, venue_w, venue_h,
+        fixed_anchor_fid=fixed_anchor_fid,
+        verbose=verbose,
+    )
     if verbose:
         print(f"\n[camflow] LOO summary: "
               f"mean={loo_res['mean_err_px']:.1f}px  "
@@ -697,6 +703,7 @@ def run_venue_camflow(
     results = {
         "video_stem": video_stem,
         "dark_threshold": dark_threshold,
+        "fixed_anchor_fid": fixed_anchor_fid,
         "n_tracking_frames": len(frame_ids),
         "n_gt_anchors": len(gt),
         "full_eval": full_res,
@@ -721,6 +728,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dark-threshold", type=int, default=80, help="Max brightness for dark features (default=80)")
     p.add_argument("--min-gradient", type=float, default=5.0, help="Min gradient for texture filter (default=5.0)")
     p.add_argument("--min-dark-pixels", type=int, default=50, help="Min dark pixels to use dark-mode (default=50)")
+    p.add_argument("--fixed-anchor-fid", type=int, default=None, help="Frame ID to keep as fixed anchor (never held out in LOO)")
     p.add_argument("--no-video", action="store_true")
     return p
 
@@ -737,6 +745,7 @@ def main() -> None:
         dark_threshold=args.dark_threshold,
         min_gradient=args.min_gradient,
         min_dark_pixels=args.min_dark_pixels,
+        fixed_anchor_fid=args.fixed_anchor_fid,
         no_video=args.no_video,
     )
 
