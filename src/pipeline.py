@@ -601,6 +601,8 @@ def run_pipeline(
             kalman_reinit_gap=trk_cfg.get("kalman_reinit_gap", 0),
             w_size=trk_cfg.get("w_size", 0.0),
             w_color=trk_cfg.get("w_color", 0.0),
+            r_det_pos=trk_cfg.get("r_det_pos", 4.0),
+            r_interp_pos=trk_cfg.get("r_interp_pos", 40.0),
         )
         pose_manifest = track_manifest_path
 

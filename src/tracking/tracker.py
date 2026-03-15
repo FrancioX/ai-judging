@@ -93,6 +93,8 @@ def track_skier(
     kalman_reinit_gap: int = 0,
     w_size: float = 0.0,
     w_color: float = 0.0,
+    r_det_pos: float = 4.0,
+    r_interp_pos: float = 40.0,
 ) -> Path:
     """Select the best skier track(s), smooth bboxes, fill gaps and re-crop.
 
@@ -340,15 +342,15 @@ def track_skier(
             and _HAS_NUMPY
         )
         if use_flow_for_merge:
-            # Seed from the longest track (most detections = most likely main subject).
-            # The longest track is more robust than the highest-scoring track as a
-            # seed because a bystander with high confidence may outscore the main
-            # skier on quality alone, causing the OF trace to follow the wrong person.
-            seed_tid = max(tracks, key=lambda t: len(tracks[t]))
+            # Seed from the highest Phase-A-scoring selected track. selected_tracks[0]
+            # is sorted by composite score (w_conf=0.3, w_center=0.5, w_length=0.2) so
+            # it is the most center-proximate, high-confidence candidate — most likely
+            # to be the target skier rather than a bystander at the frame periphery.
+            seed_tid = selected_tracks[0]
             best_track_obs_list = tracks[seed_tid]
             seed_obs = best_track_obs_list[0] if best_track_obs_list else None
             print(f"  Building OF trace for merge (seed: track "
-                  f"{seed_tid} [longest={len(best_track_obs_list)}dets], {len(frame_candidates)} frames with detections)…")
+                  f"{seed_tid} [selected[0], {len(best_track_obs_list)}dets], {len(frame_candidates)} frames with detections)…")
             preliminary_of_trace = _build_of_trace(
                 n_frames, img_w, img_h,
                 frame_dir, seg_frames,
@@ -593,6 +595,8 @@ def track_skier(
             smoothed_velocities = _smooth_bboxes_velocity_aware(
                 frame_bboxes, n_frames, smooth_window, flow_velocities,
                 kalman_reinit_gap=kalman_reinit_gap,
+                r_det_pos=r_det_pos,
+                r_interp_pos=r_interp_pos,
             )
         else:
             _smooth_bboxes(frame_bboxes, n_frames, smooth_window)
@@ -2311,6 +2315,8 @@ def _smooth_bboxes_velocity_aware(
     window: int,
     flow_velocities: dict[int, tuple[float, float]],
     kalman_reinit_gap: int = 0,
+    r_det_pos: float = 4.0,
+    r_interp_pos: float = 40.0,
 ) -> dict[int, tuple[float, float]]:
     """Smooth bboxes using a Kalman filter with constant acceleration model.
 
@@ -2376,8 +2382,6 @@ def _smooth_bboxes_velocity_aware(
     ])
 
     # Measurement noise — detected vs interpolated
-    r_det_pos = 4.0            # position noise for detected frames
-    r_interp_pos = 40.0        # position noise for interpolated frames
     r_size = 8.0               # size noise (always moderate)
     R_det = np.diag([r_det_pos, r_det_pos, r_size, r_size])
     R_interp = np.diag([r_interp_pos, r_interp_pos, r_size * 2, r_size * 2])
