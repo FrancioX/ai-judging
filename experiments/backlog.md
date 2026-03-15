@@ -13,6 +13,14 @@ Knözinger: 28.5px LOO mean, 92% within 50px. Script: `scripts/venue_camflow.py`
 - Rationale: Only 2 videos have venue GT (Andreas Bakke, Knözinger). Need broader validation across different slope types and zoom levels to confirm 28-53px LOO is representative.
 - Effort: 15 annotations × N videos via `scripts/annotate_venue.py` (~3 min/video)
 
+**Optimal annotation placement vs. uniform spacing**
+- Rationale: Sparsity test used evenly-spaced annotations. Placing 5 annotations at path inflection points (where the athlete turns or accelerates) could improve LOO accuracy vs. uniform placement with the same budget.
+- Effort: 0.5 day
+
+**Extend tracking to full video run (>990 frames)**
+- Rationale: Tracking currently stops at frame 990 for one evaluation video while GT extends to 1370. Tracking-guided interpolation could help for frames 990-1370 if full tracking is available.
+- Effort: Investigate why tracking stops early; may be a pipeline cutoff
+
 **Slope silhouette / sky-horizon matching (automatic anchor)**
 - Rationale: The sky-slope boundary is a distinctive 1D profile visible from both broadcast and venue viewpoints. When sky is visible in the frame, matching this silhouette against the venue image could replace the manual start-gate click. Not tried.
 - Expected effort: 1-2 days
