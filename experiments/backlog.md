@@ -6,21 +6,25 @@ Candidates not yet tried, or partially tried with clear remaining angles. Ordere
 
 ## Venue Mapping
 
-**Annotate more videos (mini set or dev set)**
-- Rationale: Only 1 video has venue GT annotations. Broader validation needed to confirm 30px LOO is representative.
+**Current best (valid)**: Background OF + PCHIP, one fixed start-gate anchor per venue.
+Knözinger: 28.5px LOO mean, 92% within 50px. Script: `scripts/venue_camflow.py`.
+
+**Annotate more videos for venue mapping (dev set)**
+- Rationale: Only 2 videos have venue GT (Andreas Bakke, Knözinger). Need broader validation across different slope types and zoom levels to confirm 28-53px LOO is representative.
 - Effort: 15 annotations × N videos via `scripts/annotate_venue.py` (~3 min/video)
 
-**Integrate `run_venue_mapping` into `src/pipeline.py` as stage 7**
-- Rationale: `src/venue/venue_mapping.py` is ready but not wired into the main pipeline.
-- Effort: 1 hour
+**Slope silhouette / sky-horizon matching (automatic anchor)**
+- Rationale: The sky-slope boundary is a distinctive 1D profile visible from both broadcast and venue viewpoints. When sky is visible in the frame, matching this silhouette against the venue image could replace the manual start-gate click. Not tried.
+- Expected effort: 1-2 days
+- Note: Requires sky to be consistently visible in early-run frames. Standard NCC/SIFT fail (Exp 3) because the broadcast camera and venue image are from different physical positions — but silhouette matching is a 1D geometric feature that is more viewpoint-robust.
 
-**Extend tracking to full video run (>990 frames)**
-- Rationale: Tracking stops at frame 990 for this video; GT extends to 1370. Tracking-guided interpolation could help for frames 990-1370 if tracking data were available.
-- Effort: Investigate why tracking stops early; may be a pipeline cutoff
+**Venue reference image from broadcast camera (eliminates viewpoint problem)**
+- Rationale: If a single wide-angle image is captured with the broadcast camera (zoomed fully out) at competition start, it shares the exact viewpoint with the video. Template matching would then work precisely without any manual annotation.
+- Effort: Operational (one image per venue per day); no code changes needed beyond adding the wide-angle image as `venue_image.png`.
 
-**Optimal annotation placement vs. uniform spacing**
-- Rationale: Sparsity test used evenly-spaced annotations. Placing 5 annotations at path inflection points (where the athlete turns or accelerates) could improve LOO accuracy vs. uniform placement with the same budget.
-- Effort: 0.5 day
+**Wire venue_camflow into main pipeline as stage 7**
+- Rationale: `scripts/venue_camflow.py` is standalone; should be wired into `src/pipeline.py` as a proper stage writing `output/venue_mapping/<stem>/` and a JSON manifest.
+- Effort: 2-3 hours
 
 ---
 

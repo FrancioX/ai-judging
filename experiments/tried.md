@@ -99,10 +99,14 @@ Everything that has been attempted across all experiment loops and manual runs. 
 | Venue v2 | Global homography from tracking-center correspondences | loop-20260314-venue | Rejected | 143px; camera motion makes global (cx,cy)→(vx,vy) inconsistent |
 | Venue v3 (linear) | GT-anchored linear interpolation | loop-20260314-venue | **Accepted** (baseline) | 0px non-LOO, 31.6px LOO mean; standard eval trivially 0 since evaluator uses same interpolation |
 | Venue v3 (tracking) | GT-anchored tracking arc-length interpolation | loop-20260314-venue | Rejected | Fails outside tracking range: 264-369px for frames 990+ |
-| Venue v3 (PCHIP + linear-trend extrapolation) | PCHIP interpolation + linear-trend at endpoints | loop-20260314-venue | **Accepted** (current best) | 3.4px non-LOO, **30.3px LOO mean, 86.7% within 50px** |
+| Venue v3 (PCHIP + linear-trend extrapolation) | PCHIP interpolation + linear-trend at endpoints | loop-20260314-venue | **Accepted** (baseline) | 3.4px non-LOO, **30.3px LOO mean, 86.7% within 50px** — INVALID in production (uses GT as prediction) |
 | Sparsity test | 1-15 GT annotations (evenly spaced) | loop-20260314-venue | Analysis | 5 annotations → 27px mean, 100% within 50px; 7 → 11.5px |
 | PCHIP/linear blend | α-sweep between PCHIP and linear | loop-20260314-venue | Rejected | Optimal α=1.0 (pure PCHIP); no improvement from blending |
 | Per-segment similarity transform | 2D similarity transform per GT segment using tracking | loop-20260314-venue | Rejected | 521px mean; tracking motion ≠ venue motion within segment; fails outside tracking range |
+| Background OF + linear regression | Farneback OF on dark-feature pixels, linear regression cum_flow→venue | loop-20260314-camflow | Rejected | 149-160px LOO; scale varies non-linearly with zoom, linear cannot capture it |
+| Background OF + PCHIP (fixed anchor) | Dark-feature OF, PCHIP spline, one fixed start-gate anchor | loop-20260314-camflow | **Accepted (current best — valid)** | Knözinger: **28.5px LOO mean, 92% within 50px** (fixed anchor); Andreas Bakke: 52.9px LOO mean |
+| Multi-scale NCC template matching | Gradient image of video frame searched in venue at 30 scales | loop-20260314-camflow | Rejected | 735-771px mean; broadcast camera and venue image are different viewpoints; snow has no discriminative gradient |
+| SIFT on dark-feature regions | SIFT keypoints restricted to dark-mask (V<80, gradient>5) | loop-20260314-camflow | Rejected | 34 keypoints/frame, 2 good matches; viewpoint difference too large for standard feature matching |
 
 ---
 
