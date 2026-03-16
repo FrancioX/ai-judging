@@ -116,6 +116,18 @@ pose_3d:
     maxlen: 243
     att_fuse: true
 
+# Velocity extraction — estimates ground-relative athlete velocity by
+# subtracting camera motion (background optical flow) from tracked pixel velocity.
+velocity:
+  dark_threshold: 80          # max pixel brightness considered "dark feature" (rocks/trees)
+  min_gradient: 5.0           # minimum Sobel gradient magnitude for texture
+  min_dark_pixels: 50         # min dark-feature pixels before falling back to all-background flow
+  smooth_window: 5            # rolling-average half-window for speed smoothing (0 = off)
+  zoom_correct: false         # normalise flow by bbox-area proxy for camera zoom
+  normalize_by_height: false  # divide compensated speed by bbox height (scale invariance)
+  jump_min_airtime_frames: 5  # minimum duration (frames) for a detected jump
+  jump_vy_threshold: 3.0      # upward vertical velocity threshold (px/frame) for jump detection
+
 # Visualization
 visualization:
   overlay_2d: true

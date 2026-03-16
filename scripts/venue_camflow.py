@@ -54,6 +54,12 @@ try:
 except ImportError:
     _SCIPY = False
 
+from src.utils.optical_flow import (
+    background_flow as _background_flow,
+    compute_cumulative_background_flow,
+    dark_feature_mask as _dark_feature_mask,
+)
+
 
 # ---------------------------------------------------------------------------
 # I/O helpers
@@ -92,195 +98,8 @@ def _load_gt(gt_path: Path) -> dict[int, tuple[float, float]]:
 
 # ---------------------------------------------------------------------------
 # Background optical flow
+# (functions moved to src/utils/optical_flow.py and re-imported above)
 # ---------------------------------------------------------------------------
-
-def _dark_feature_mask(
-    gray: np.ndarray,
-    bbox: list[float],
-    *,
-    dark_threshold: int = 80,
-    min_gradient: float = 5.0,
-) -> np.ndarray:
-    """Build a mask of dark, textured pixels (rocks/trees) excluding athlete bbox.
-
-    Snow and sky are bright and low-texture → unreliable flow.
-    Rocks and trees are dark and high-texture → reliable flow.
-
-    Parameters
-    ----------
-    dark_threshold : int
-        Max brightness (0-255) to be considered "dark feature". Default 80.
-    min_gradient : float
-        Min gradient magnitude to require texture (filters smooth dark areas).
-    """
-    h, w = gray.shape[:2]
-
-    # Dark pixel mask
-    dark_mask = gray < dark_threshold
-
-    # Texture mask: compute gradient magnitude, require some texture
-    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-    texture_mask = grad_mag > min_gradient
-
-    # Athlete exclusion
-    x1, y1, x2, y2 = [int(v) for v in bbox]
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w, x2), min(h, y2)
-    athlete_mask = np.zeros((h, w), dtype=bool)
-    if x2 > x1 and y2 > y1:
-        athlete_mask[y1:y2, x1:x2] = True
-
-    return dark_mask & texture_mask & ~athlete_mask
-
-
-def _background_flow(
-    gray_prev: np.ndarray,
-    gray_curr: np.ndarray,
-    bbox: list[float],
-    *,
-    dark_threshold: int = 80,
-    min_gradient: float = 5.0,
-    min_dark_pixels: int = 50,
-    fallback_percentile: int = 50,
-) -> tuple[float, float]:
-    """Compute background flow from dark, textured pixels (rocks/trees).
-
-    Uses dark+textured pixels (rocks/trees) rather than all background pixels.
-    Snow dominates most frames and gives unreliable flow; rocks/trees are
-    much more distinctive and give accurate motion vectors.
-
-    If too few dark pixels are found (<min_dark_pixels), falls back to
-    all-background median flow.
-    """
-    # Farneback dense flow
-    flow = cv2.calcOpticalFlowFarneback(
-        gray_prev, gray_curr,
-        None,
-        pyr_scale=0.5, levels=3, winsize=15,
-        iterations=3, poly_n=5, poly_sigma=1.2,
-        flags=0,
-    )
-    h, w = gray_prev.shape[:2]
-
-    # Try dark-feature mask first
-    dark_mask = _dark_feature_mask(
-        gray_prev, bbox,
-        dark_threshold=dark_threshold,
-        min_gradient=min_gradient,
-    )
-
-    dark_count = int(dark_mask.sum())
-    if dark_count >= min_dark_pixels:
-        dx = float(np.median(flow[dark_mask, 0]))
-        dy = float(np.median(flow[dark_mask, 1]))
-        return dx, dy
-
-    # Fallback: all non-athlete background
-    x1, y1, x2, y2 = [int(v) for v in bbox]
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w, x2), min(h, y2)
-    all_bg = np.ones((h, w), dtype=bool)
-    if x2 > x1 and y2 > y1:
-        all_bg[y1:y2, x1:x2] = False
-
-    bg_dx = flow[all_bg, 0]
-    bg_dy = flow[all_bg, 1]
-
-    if bg_dx.size == 0:
-        return 0.0, 0.0
-
-    dx = float(np.percentile(bg_dx, fallback_percentile))
-    dy = float(np.percentile(bg_dy, fallback_percentile))
-    return dx, dy
-
-
-def compute_cumulative_background_flow(
-    frame_dir: Path,
-    frame_files: list[str],
-    bboxes: list[list[float]],
-    *,
-    dark_threshold: int = 80,
-    min_gradient: float = 5.0,
-    min_dark_pixels: int = 50,
-    zoom_correct: bool = False,
-    verbose: bool = True,
-) -> tuple[np.ndarray, int]:
-    """Compute cumulative background flow using dark-feature (rock/tree) pixels.
-
-    Parameters
-    ----------
-    zoom_correct : bool
-        If True, normalize each frame's flow by the athlete's bounding-box area
-        (proxy for camera zoom).  As the camera zooms in, the athlete's bbox
-        grows; a larger bbox means more video pixels per venue metre, so we
-        divide the flow by sqrt(bbox_area / ref_area) to get a zoom-invariant
-        signal.
-
-    Returns
-    -------
-    (cum_flow, n_dark_frames)
-        cum_flow: shape (N, 2), cumulative zoom-corrected flow from frame 0.
-        n_dark_frames: number of frames where dark pixels were used (vs fallback).
-    """
-    n = len(frame_files)
-    per_frame_bg = np.zeros((n, 2), dtype=float)
-    n_dark_used = 0
-
-    # Bbox areas per frame (for zoom correction)
-    bbox_areas = np.zeros(n, dtype=float)
-    for i, bb in enumerate(bboxes):
-        if len(bb) >= 4:
-            w = max(1.0, bb[2] - bb[0])
-            h = max(1.0, bb[3] - bb[1])
-            bbox_areas[i] = w * h
-
-    ref_area = bbox_areas[bbox_areas > 0].mean() if np.any(bbox_areas > 0) else 1.0
-
-    prev_gray = None
-    for i, fname in enumerate(frame_files):
-        frame_bgr = cv2.imread(str(frame_dir / fname), cv2.IMREAD_GRAYSCALE)
-        if frame_bgr is None:
-            if verbose:
-                print(f"  [flow] Frame {i} unreadable: {fname}")
-            prev_gray = None
-            continue
-
-        if prev_gray is not None:
-            dark_mask = _dark_feature_mask(
-                prev_gray, bboxes[i],
-                dark_threshold=dark_threshold,
-                min_gradient=min_gradient,
-            )
-            if int(dark_mask.sum()) >= min_dark_pixels:
-                n_dark_used += 1
-
-            dx, dy = _background_flow(
-                prev_gray, frame_bgr, bboxes[i],
-                dark_threshold=dark_threshold,
-                min_gradient=min_gradient,
-                min_dark_pixels=min_dark_pixels,
-            )
-
-            # Zoom correction: normalise by sqrt(bbox_area / ref_area)
-            if zoom_correct and bbox_areas[i] > 0:
-                zoom_factor = float(np.sqrt(bbox_areas[i] / ref_area))
-                dx /= zoom_factor
-                dy /= zoom_factor
-
-            per_frame_bg[i] = [dx, dy]
-
-        prev_gray = frame_bgr
-
-        if verbose and i % 100 == 0:
-            print(f"  [flow] {i}/{n} frames processed...", end="\r")
-
-    if verbose:
-        print(f"  [flow] {n}/{n} frames processed.  ")
-
-    cum_flow = np.cumsum(per_frame_bg, axis=0)
-    return cum_flow, n_dark_used
 
 
 # ---------------------------------------------------------------------------

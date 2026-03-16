@@ -88,6 +88,13 @@ STAGES = {
         "dependencies": ["frames", "pose_2d"],  # Also optionally segmentation/tracking
         "output_dir": "visualizations",
     },
+    "velocity": {
+        "module": "src.velocity.velocity",
+        "function": "extract_velocity",
+        "display_name": "Velocity Extraction",
+        "dependencies": ["tracking"],
+        "output_dir": "velocity",
+    },
 }
 
 
@@ -221,6 +228,18 @@ def _stage_config(config: dict, stage_name: str) -> dict:
             "overlay_2d": viz_cfg.get("overlay_2d", True),
             "viz_fps": viz_cfg.get("fps"),
         }
+    elif stage_name == "velocity":
+        vel_cfg = config.get("velocity", {})
+        return {
+            "dark_threshold": vel_cfg.get("dark_threshold", 80),
+            "min_gradient": vel_cfg.get("min_gradient", 5.0),
+            "min_dark_pixels": vel_cfg.get("min_dark_pixels", 50),
+            "smooth_window": vel_cfg.get("smooth_window", 5),
+            "zoom_correct": vel_cfg.get("zoom_correct", False),
+            "normalize_by_height": vel_cfg.get("normalize_by_height", False),
+            "jump_min_airtime_frames": vel_cfg.get("jump_min_airtime_frames", 5),
+            "jump_vy_threshold": vel_cfg.get("jump_vy_threshold", 3.0),
+        }
     else:
         return {}
 
@@ -285,6 +304,18 @@ def _validate_stage_inputs(
     resolved["seg_dir"] = seg_dir
 
     if stage_name == "tracking":
+        return resolved
+
+    if stage_name == "velocity":
+        track_dir = base_out / "tracking" / video_stem
+        track_manifest = track_dir / "tracking.json"
+        if not track_manifest.exists():
+            raise FileNotFoundError(
+                f"Tracking output not found: {track_manifest}\n"
+                f"Run `--stage tracking` first."
+            )
+        resolved["track_dir"] = track_dir
+        resolved["track_manifest"] = track_manifest
         return resolved
 
     if stage_name == "pose_2d":
@@ -481,6 +512,19 @@ def run_single_stage(
             lift_to_3d(poses_2d_path, pose_3d_dir, **kwargs)
         except ImportError:
             print("Error: 3D pose lifting module not available")
+            sys.exit(1)
+
+    # ── Stage: Velocity Extraction ─────────────────────────────────────
+    elif stage_name == "velocity":
+        track_dir = resolved["track_dir"]
+        vel_dir = base_out / "velocity" / video_stem
+        kwargs = _stage_config(config, stage_name)
+        frame_root = base_out / "frames"
+        try:
+            from src.velocity.velocity import extract_velocity
+            extract_velocity(track_dir, vel_dir, frame_root=frame_root, **kwargs)
+        except ImportError as exc:
+            print(f"Error: velocity module unavailable: {exc}")
             sys.exit(1)
 
     # ── Stage: Visualization ───────────────────────────────────────────
