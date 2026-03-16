@@ -138,6 +138,8 @@ Maximum contrast: one easy + one hard per sport. Use for the fastest sanity-chec
 
 For **manual experiments** (outside of a loop), log results by appending an entry to [experiments/experiment_log.md](experiments/experiment_log.md). Each entry must include: date, goal (one-sentence hypothesis), implementation summary, results table (per-video `mean_error_px` + `HOTA` with delta vs previous best), and conclusion. Use sub-entries (3a, 3b, …) for iterative tuning. Update the "Current Best" section when a new best is achieved.
 
+**Outside of an experiment loop, do not commit git changes unless the user explicitly asks.**
+
 Two global files track the state of all experimentation across loops and manual runs:
 
 - `experiments/tried.md` — everything that has been tried, organised by pipeline area, with a one-line outcome for each.
